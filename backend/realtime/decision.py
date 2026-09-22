@@ -83,7 +83,7 @@ class RealtimeDecisionEngine:
         target_key: str | None,
         on_event: EventCallback,
         silence_ms: int = 800,
-        menu_completion_ms: int = 3000,
+        menu_completion_ms: int = 8000,
         no_speech_timeout_ms: int = 5000,
     ) -> None:
         self.channel_uuid = channel_uuid

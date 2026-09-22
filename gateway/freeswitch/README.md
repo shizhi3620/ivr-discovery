@@ -61,6 +61,7 @@ cp .env.example .env.local
 | --- | --- | --- |
 | `softphone` | Mac 软电话（人工验证） | `SIP_DEFAULT_PASSWORD` |
 | `gateway1` | Android SIM 网关 | `SIP_DEFAULT_PASSWORD` |
+| `testclient` | pjsua 自动接听/播放测试端点 | `SIP_DEFAULT_PASSWORD` |
 
 软电话配置：服务器 `<LAN_IP>:5060`，UDP，明文，域 `<LAN_IP>`。
 
@@ -95,6 +96,19 @@ FreeSWITCH 必须加载 `mod_sndfile`，否则录音命令不会生成 WAV。本
 
 录音结束后，后端把 WAV 提交给腾讯云 `8k_zh` 做文件识别。`10010`
 人工软电话验证不使用后端 Provider，因此不会自动生成该录音。
+
+## 实时 ASR 本地测试端点
+
+安装 `pjsua`：
+
+```bash
+brew install pjproject
+gateway/freeswitch/scripts/run-pjsua-testclient.sh /tmp/apple-root-45s.wav
+```
+
+该脚本从 `.env.local` 读取密码，在 `/tmp` 生成权限受限的临时 pjsua 配置，
+使用 `testclient` 账号自动接听，并通过 `--play-file`/`--auto-play` 将固定 WAV
+发送给 FreeSWITCH。该端点只用于局域网实时 ASR/DTMF 回归，不用于运营商外呼。
 
 ## 停止
 

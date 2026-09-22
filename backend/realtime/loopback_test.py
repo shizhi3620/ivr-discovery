@@ -94,7 +94,7 @@ class LoopbackHarness:
                 "remote_channel": remote_channel,
                 "silence_ms": 800,
                 "menu_completion_ms": 3000,
-                "no_speech_timeout_ms": 5000,
+                "no_speech_timeout_ms": 30000,
                 "gain": self.gain,
             },
             separators=(",", ":"),

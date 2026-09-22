@@ -25,6 +25,8 @@ class SoftphoneHarness:
         encoding: str,
         mix_type: str,
         gain: float,
+        extension: str,
+        local_playback: bool,
     ):
         self.wav_path = wav_path
         self.relay_base = relay_base.rstrip("/")
@@ -32,6 +34,8 @@ class SoftphoneHarness:
         self.encoding = encoding
         self.mix_type = mix_type
         self.gain = gain
+        self.extension = extension
+        self.local_playback = local_playback
         provider = AndroidSimGatewayProvider()
         self.domain = provider.config.domain
         self.esl_config = provider._esl_config
@@ -54,11 +58,12 @@ class SoftphoneHarness:
         event_task = asyncio.create_task(consume())
         await asyncio.sleep(0.2)
 
+        app = f"&playback({self.wav_path})" if self.local_playback else "&park()"
         originate = (
             "originate {origination_caller_id_number=ivr-local-playback}"
-            f"user/softphone@{self.domain} &playback({self.wav_path})"
+            f"user/{self.extension}@{self.domain} {app}"
         )
-        print("请接听 Linphone 上的本地测试呼叫")
+        print("等待本地 SIP 测试端点接听")
         print("originate=", await asyncio.to_thread(self.run_api, f"bgapi {originate}"))
 
         channel_id = await self._wait_for_answer()
@@ -79,7 +84,7 @@ class SoftphoneHarness:
                 "channels": channels,
                 "remote_channel": 0,
                 "silence_ms": 800,
-                "menu_completion_ms": 3000,
+                "menu_completion_ms": 8000,
                 "no_speech_timeout_ms": 30000,
                 "gain": self.gain,
             },
@@ -146,7 +151,7 @@ class SoftphoneHarness:
                 (
                     item
                     for item in payload.get("rows", [])
-                    if "softphone" in str(item.get("name"))
+                    if self.extension in str(item.get("name"))
                 ),
                 None,
             )
@@ -167,6 +172,8 @@ def main() -> None:
         default="mixed",
     )
     parser.add_argument("--gain", type=float, default=1.0)
+    parser.add_argument("--extension", default="softphone")
+    parser.add_argument("--local-playback", action="store_true")
     args = parser.parse_args()
 
     load_dotenv(".env")
@@ -178,6 +185,8 @@ def main() -> None:
             encoding=args.encoding,
             mix_type=args.mix_type,
             gain=args.gain,
+            extension=args.extension,
+            local_playback=args.local_playback,
         ).run()
     )
 

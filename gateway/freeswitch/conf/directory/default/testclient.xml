@@ -1,0 +1,12 @@
+<include>
+  <user id="testclient">
+    <params>
+      <param name="password" value="SIP_PASSWORD_PLACEHOLDER"/>
+    </params>
+    <variables>
+      <variable name="user_context" value="default"/>
+      <variable name="effective_caller_id_name" value="Realtime Test Client"/>
+      <variable name="effective_caller_id_number" value="testclient"/>
+    </variables>
+  </user>
+</include>

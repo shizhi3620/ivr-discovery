@@ -126,7 +126,7 @@ class RealtimeRelay:
                 on_event=publish,
                 silence_ms=int(metadata.get("silence_ms", 800)),
                 menu_completion_ms=int(
-                    metadata.get("menu_completion_ms", 3000)
+                    metadata.get("menu_completion_ms", 8000)
                 ),
                 no_speech_timeout_ms=int(
                     metadata.get("no_speech_timeout_ms", 5000)

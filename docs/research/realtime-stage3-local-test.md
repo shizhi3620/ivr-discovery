@@ -19,16 +19,23 @@ FreeSWITCH 真实 RTP
 - Linphone 作为真实 RTP 端点时，`mod_audio_stream` 可以捕获实时音频；中继能收到非零 PCM 帧并产生 ASR 文本。
 - 非菜单语音会触发 `unknown_boundary`，测试控制器可以执行安全挂断。
 
-## 尚未通过
+## 最终通过
 
-- 使用 `uuid_broadcast` 向 parked Linphone channel 播放测试 WAV 时，Linphone 没有听到目标音频。
-- 使用 `playback` 应用时模块能捕获到部分媒体，但 Linphone 人工端点同时会采集操作者麦克风，测试过程被真人语音污染。
-- 因此“确定性的已知提示音频 → final ASR → dtmf_ready → DTMF 写入”还没有在本地稳定复现。
+人工 Linphone 端点不适合作为确定性媒体源：`uuid_broadcast` 没有把测试 WAV 可靠播放到 Linphone，而 `playback` 测试会被操作者麦克风污染。
+
+最终使用 `pjsua 2.17` 作为自动接听测试端点：
+
+- FreeSWITCH 以 `user/testclient` 呼出。
+- pjsua 通过 `--auto-answer=200` 自动接听。
+- pjsua 通过 `--play-file` 和 `--auto-play` 将 45 秒测试 WAV 发送给 FreeSWITCH。
+- `mod_audio_stream` 以 `mono + s16le` 捕获 testclient leg 的 PCM。
+- 中继完成 8k→16k 转换并送腾讯 `16k_zh`。
+- 腾讯返回多个 partial/final，完整识别隐私说明和“如果您同意，请按1”。
+- 800 ms 静音后产生 `dtmf_ready`。
+- 控制器执行 `uuid_send_dtmf`，FreeSWITCH 返回成功。
+
+阶段 3 已通过。该测试仍完全位于局域网，没有经过运营商。
 
 ## 结论
 
-阶段 3 仍未放行，不能进入阶段 4 的真实电话。下一步需要一个不依赖人工麦克风的本地音频源，优先选择：
-
-1. 可自动接听并向 FreeSWITCH 发送 WAV 的本地 SIP/RTP 测试端点。
-2. `mod_rtp` 配合本地 RTP 音频发生器。
-3. 能在拨入后自动播放固定 WAV 的第二台 SIP 测试客户端。
+可以用 `gateway/freeswitch/scripts/run-pjsua-testclient.sh <wav>` 启动确定性测试端点，再用 `backend/realtime/softphone_test.py --extension testclient` 做端到端回归。进入阶段 4 前仍需人工确认本轮输出和授权目标范围。
