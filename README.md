@@ -8,7 +8,7 @@ Automated IVR phone tree explorer. Enter an authorized phone number and the syst
 
 1. **Root call**: The default Android SIM gateway places a real cellular call and records the IVR audio
 2. **Transcript parsing**: Tencent Cloud ASR transcribes the 8 kHz recording; DeepSeek extracts structured menu options (DTMF keys + labels)
-3. **BFS exploration**: Child nodes are queued in a priority queue (sorted by depth) and explored by a pool of 3 concurrent workers — true breadth-first traversal
+3. **BFS exploration**: Child nodes are queued in a priority queue (sorted by depth). The default worker count is 1 because one SIM can carry one cellular voice call at a time
 4. **Branch navigation**: For each DTMF option, a new call is placed and the key is injected after the greeting. Voice-only options are synthesized to 8 kHz WAV with Tencent TTS and played into the call
 5. **Cycle detection**: Menus are fingerprinted by their option labels. Jaccard similarity (threshold 0.6) catches cases where the same IVR menu is paraphrased differently across calls
 6. **Live tree updates**: Node states stream over WebSocket while calls run. Tencent file ASR is asynchronous, so the full transcript arrives after the call ends

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from fastapi import WebSocket
 
@@ -13,7 +14,8 @@ from providers.base import STATUS_BUSY, STATUS_COMPLETED
 
 logger = logging.getLogger(__name__)
 
-MAX_CONCURRENT_CALLS = 3
+# A single cellular modem/SIM can carry only one active voice call.
+MAX_CONCURRENT_CALLS = max(1, int(os.getenv("MAX_CONCURRENT_CALLS", "1")))
 MAX_DEPTH = 3
 MIN_TRANSCRIPT_LENGTH = 20  # Retry if transcript is shorter than this
 

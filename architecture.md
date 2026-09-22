@@ -48,9 +48,10 @@ overseas demo, but it is not part of the China mainland baseline.
 ### Discovery Engine
 
 `backend/discovery.py` owns BFS orchestration, retry policy, cycle detection and
-WebSocket updates. It uses three concurrent workers (`MAX_CONCURRENT_CALLS = 3`)
-pulling from a depth-priority queue. A node is only expanded after its transcript
-has been parsed.
+WebSocket updates. It uses a configurable worker pool
+(`MAX_CONCURRENT_CALLS`, default `1`) pulling from a depth-priority queue. The
+single-SIM Android gateway cannot carry more than one cellular voice call at a
+time. A node is only expanded after its transcript has been parsed.
 
 ### Telephony Provider
 
