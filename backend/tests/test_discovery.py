@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
 import database as db
 from discovery import options_fingerprint, get_node_depth, is_cycle, _core_label
-from models import Node, NodeStatus
+from discovery_windows import APP_TIMEZONE, get_current_window
+from models import Node, NodeStatus, Session, Target
 
 
 class TestOptionsFingerprint:
@@ -256,3 +259,102 @@ class TestExploreNodeProviderBoundary:
         stored = await db.get_node(node.id)
         assert stored.status == NodeStatus.COMPLETED
         assert stored.prompt_text.startswith("(human/queue)")
+
+    @pytest.mark.asyncio
+    async def test_budget_gate_blocks_before_provider_call(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from discovery import explore_node
+        from providers.base import ProviderCapabilities
+
+        target = Target(phone_number="4006668800")
+        await db.create_target(target)
+        window = await get_current_window(
+            target,
+            now=datetime.now(APP_TIMEZONE),
+        )
+        session = Session(
+            target_id=target.id,
+            discovery_window_id=window.id,
+            phone_number=target.phone_number,
+        )
+        await db.create_session(session)
+        await db.update_discovery_window(window.id, budget_limit=1)
+        await db.record_call_attempt(
+            target_id=target.id,
+            discovery_window_id=window.id,
+            session_id=session.id,
+            external_call_id="already-used",
+        )
+        node = Node(session_id=session.id)
+        await db.create_node(node)
+
+        provider = MagicMock()
+        provider.name = "fake"
+        provider.capabilities = ProviderCapabilities(
+            transcript=True,
+            speech=True,
+            dtmf=True,
+        )
+        provider.place_call = AsyncMock()
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+
+        options = await explore_node(ws, session, node, provider)
+
+        assert options == []
+        provider.place_call.assert_not_awaited()
+        stored = await db.get_node(node.id)
+        assert stored.status == NodeStatus.FAILED
+        assert "budget exhausted" in stored.prompt_text
+
+    @pytest.mark.asyncio
+    async def test_successful_origination_records_counted_call(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from discovery import explore_node
+        from providers.base import CallResult, ProviderCapabilities, STATUS_COMPLETED
+
+        target = Target(phone_number="4006668800")
+        await db.create_target(target)
+        window = await get_current_window(
+            target,
+            now=datetime.now(APP_TIMEZONE),
+        )
+        session = Session(
+            target_id=target.id,
+            discovery_window_id=window.id,
+            phone_number=target.phone_number,
+        )
+        await db.create_session(session)
+        node = Node(session_id=session.id)
+        await db.create_node(node)
+
+        provider = MagicMock()
+        provider.name = "fake"
+        provider.capabilities = ProviderCapabilities(
+            transcript=True,
+            speech=True,
+            dtmf=True,
+        )
+        provider.place_call = AsyncMock(return_value="call-1")
+        provider.wait_for_call = AsyncMock(
+            return_value=CallResult(
+                "call-1",
+                STATUS_COMPLETED,
+                transcript="Press 1 for billing, press 2 for support.",
+            )
+        )
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+        parsed = {
+            "prompt_text": "Main menu",
+            "options": [{"dtmf_key": "1", "label": "Billing"}],
+        }
+        with patch(
+            "discovery.transcript_parser.parse_transcript",
+            new=AsyncMock(return_value=parsed),
+        ):
+            await explore_node(ws, session, node, provider)
+
+        summary = await db.get_budget_summary(target.id, window.id)
+        assert summary["window_used"] == 1
+        assert summary["target_used"] == 1

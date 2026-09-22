@@ -3,11 +3,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from datetime import datetime
 
 from fastapi import WebSocket
 
 import database as db
 import transcript_parser
+from discovery_windows import (
+    APP_TIMEZONE,
+    authorize_run,
+    complete_window_and_verify,
+)
 from models import Session, Node, Edge, NodeStatus, SessionStatus
 from providers import TelephonyProvider, get_provider
 from providers.base import STATUS_BUSY, STATUS_COMPLETED
@@ -131,6 +137,21 @@ async def explore_node(
             })
             return []
 
+        budget_error = await _budget_gate_error(session)
+        if budget_error:
+            await db.update_node(
+                node.id,
+                status=NodeStatus.FAILED,
+                prompt_text=budget_error,
+            )
+            await send_json(ws, {
+                "type": "node_updated",
+                "node_id": node.id,
+                "status": "failed",
+                "prompt_text": budget_error,
+            })
+            return []
+
         # Retry loop: retry once if transcript is too short (silence/dropped call)
         concatenated = ""
         call_status = "unknown"
@@ -144,6 +165,23 @@ async def explore_node(
                 voice_option=voice_option,
                 max_duration=max_dur,
             )
+            try:
+                await _record_exploration_call(session, call_id)
+            except db.BudgetExhaustedError as exc:
+                await provider.stop_call(call_id)
+                message = str(exc)
+                await db.update_node(
+                    node.id,
+                    status=NodeStatus.FAILED,
+                    prompt_text=message,
+                )
+                await send_json(ws, {
+                    "type": "node_updated",
+                    "node_id": node.id,
+                    "status": "failed",
+                    "prompt_text": message,
+                })
+                return []
 
             await db.update_node(node.id, call_id=call_id)
             await send_json(ws, {
@@ -244,6 +282,73 @@ async def explore_node(
         return []
 
 
+async def _budget_gate_error(session: Session) -> str:
+    if not session.target_id or not session.discovery_window_id:
+        return ""
+    allowed, reason = await authorize_run(
+        target_id=session.target_id,
+        window_id=session.discovery_window_id,
+        now=datetime.now(APP_TIMEZONE),
+        override_reason=session.override_reason,
+    )
+    return "" if allowed else f"Call blocked by discovery gate: {reason}"
+
+
+async def _record_exploration_call(session: Session, call_id: str) -> None:
+    if not session.target_id or not session.discovery_window_id:
+        return
+    await db.record_call_attempt(
+        target_id=session.target_id,
+        discovery_window_id=session.discovery_window_id,
+        session_id=session.id,
+        external_call_id=call_id,
+        note="originated by discovery run",
+    )
+
+
+async def finalize_window_for_session(session: Session) -> None:
+    if not session.discovery_window_id or not session.target_id:
+        return
+    window = await db.get_discovery_window(session.discovery_window_id)
+    if window is None:
+        return
+    nodes = await db.get_nodes_by_session(session.id)
+    frontier = [
+        node.id
+        for node in nodes
+        if node.status in (
+            NodeStatus.PENDING,
+            NodeStatus.CALLING,
+            NodeStatus.PARSING,
+        )
+    ]
+    unresolved_faults = sum(
+        1 for node in nodes if node.status == NodeStatus.FAILED
+    )
+    all_branches_terminal = bool(nodes) and all(
+        node.status in (NodeStatus.COMPLETED, NodeStatus.FAILED)
+        for node in nodes
+    )
+    human_boundary_found = any(
+        node.prompt_text.startswith("(human/queue)")
+        for node in nodes
+    )
+    now = datetime.now(APP_TIMEZONE)
+    in_window = (
+        not session.override_reason
+        and datetime.fromisoformat(window.starts_at) <= now
+        < datetime.fromisoformat(window.ends_at)
+    )
+    await complete_window_and_verify(
+        window.id,
+        frontier=frontier,
+        unresolved_faults=unresolved_faults,
+        all_branches_terminal=all_branches_terminal,
+        human_boundary_found=human_boundary_found,
+        in_window=in_window,
+    )
+
+
 def get_node_depth(node: Node, nodes_by_id: dict[str, Node]) -> int:
     """Calculate depth of a node by walking parent chain."""
     depth = 0
@@ -305,24 +410,58 @@ async def create_children(
 async def send_session_status(ws: WebSocket, session: Session):
     """Send current session status to frontend."""
     nodes = await db.get_nodes_by_session(session.id)
-    total = len(nodes)
-    completed = sum(1 for n in nodes if n.status == NodeStatus.COMPLETED)
-    failed = sum(1 for n in nodes if n.status == NodeStatus.FAILED)
     total_cost = sum(n.cost for n in nodes)
 
     await db.update_session(session.id, total_cost=total_cost)
+    payload = await session_status_payload(
+        session,
+        status=SessionStatus.RUNNING,
+        nodes=nodes,
+        total_cost=total_cost,
+    )
     await send_json(ws, {
         "type": "session_status",
-        "session": {
-            "id": session.id,
-            "phone_number": session.phone_number,
-            "status": "running",
-            "total_cost": total_cost,
-            "total_nodes": total,
-            "completed_nodes": completed,
-            "failed_nodes": failed,
-        },
+        "session": payload,
     })
+
+
+async def session_status_payload(
+    session: Session,
+    *,
+    status: SessionStatus,
+    nodes: list[Node] | None = None,
+    total_cost: float | None = None,
+) -> dict:
+    nodes = nodes if nodes is not None else await db.get_nodes_by_session(session.id)
+    total_cost = (
+        total_cost
+        if total_cost is not None
+        else sum(node.cost for node in nodes)
+    )
+    payload = {
+        "id": session.id,
+        "phone_number": session.phone_number,
+        "status": status.value,
+        "total_cost": total_cost,
+        "total_nodes": len(nodes),
+        "completed_nodes": sum(
+            1 for node in nodes if node.status == NodeStatus.COMPLETED
+        ),
+        "failed_nodes": sum(
+            1 for node in nodes if node.status == NodeStatus.FAILED
+        ),
+        "target_id": session.target_id,
+        "discovery_window_id": session.discovery_window_id,
+        "planned_route": (
+            session.planned_route.value if session.planned_route else None
+        ),
+    }
+    if session.target_id and session.discovery_window_id:
+        payload["budget"] = await db.get_budget_summary(
+            session.target_id,
+            session.discovery_window_id,
+        )
+    return payload
 
 
 async def run_discovery(
@@ -339,7 +478,11 @@ async def run_discovery(
     back to a previously-explored menu.
     """
     provider = provider or get_provider()
-    await db.update_session(session.id, status=SessionStatus.RUNNING)
+    await db.update_session(
+        session.id,
+        status=SessionStatus.RUNNING,
+        started_at=datetime.now(APP_TIMEZONE).isoformat(),
+    )
 
     queue: asyncio.PriorityQueue[tuple[int, str, Node]] = asyncio.PriorityQueue()
     nodes_by_id: dict[str, Node] = {}
@@ -424,22 +567,24 @@ async def run_discovery(
             w.cancel()
 
     # Final session status
-    await db.update_session(session.id, status=final_status)
+    await db.update_session(
+        session.id,
+        status=final_status,
+        ended_at=datetime.now(APP_TIMEZONE).isoformat(),
+    )
     nodes = await db.get_nodes_by_session(session.id)
     total_cost = sum(n.cost for n in nodes)
     await db.update_session(session.id, total_cost=total_cost)
     await send_json(ws, {
         "type": "session_status",
-        "session": {
-            "id": session.id,
-            "phone_number": session.phone_number,
-            "status": final_status.value,
-            "total_cost": total_cost,
-            "total_nodes": len(nodes),
-            "completed_nodes": sum(1 for n in nodes if n.status == NodeStatus.COMPLETED),
-            "failed_nodes": sum(1 for n in nodes if n.status == NodeStatus.FAILED),
-        },
+        "session": await session_status_payload(
+            session,
+            status=final_status,
+            nodes=nodes,
+            total_cost=total_cost,
+        ),
     })
+    await finalize_window_for_session(session)
     logger.info(f"Discovery {final_status.value}: {len(nodes)} nodes, ${total_cost:.4f} total cost, {len(seen_menus)} unique menus")
 
 
@@ -544,5 +689,6 @@ async def rediscover_subtree(
 
     # Update session status
     await db.update_session(session.id, status=SessionStatus.COMPLETED)
+    await finalize_window_for_session(session)
     await send_session_status(ws, session)
     logger.info(f"Rediscovery of {node_id[:8]}... complete")

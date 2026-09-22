@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -9,8 +10,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 import database as db
-from discovery import run_discovery, rediscover_subtree
-from models import Session, SessionStatus
+from discovery import run_discovery, rediscover_subtree, session_status_payload
+from discovery_windows import APP_TIMEZONE, authorize_run, get_current_window
+from models import Session, SessionStatus, WindowStatus
 from report_generator import ReportNotReadyError, generate_optimization_report
 
 logging.basicConfig(level=logging.INFO)
@@ -60,19 +62,49 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     # Use a unique session ID per discovery run
                     import uuid
                     run_id = str(uuid.uuid4())
-                    session = Session(id=run_id, phone_number=phone_number, status=SessionStatus.RUNNING)
+                    override_reason = str(data.get("override_reason") or "")
+                    target = await db.get_or_create_target(
+                        phone_number=phone_number,
+                    )
+                    now = datetime.now(APP_TIMEZONE)
+                    window = await get_current_window(target, now=now)
+                    allowed, reason = await authorize_run(
+                        target_id=target.id,
+                        window_id=window.id,
+                        now=now,
+                        override_reason=override_reason,
+                    )
+                    if not allowed:
+                        await send_json(websocket, {
+                            "type": "error",
+                            "message": f"Discovery gate rejected call: {reason}",
+                        })
+                        continue
+
+                    await db.update_discovery_window(
+                        window.id,
+                        status=WindowStatus.RUNNING,
+                        verified_at=None,
+                    )
+                    session = Session(
+                        id=run_id,
+                        target_id=target.id,
+                        discovery_window_id=window.id,
+                        phone_number=phone_number,
+                        status=SessionStatus.RUNNING,
+                        planned_route=window.route,
+                        override_reason=override_reason,
+                        started_at=now.isoformat(),
+                    )
                     await db.create_session(session)
                     await send_json(websocket, {
                         "type": "session_status",
-                        "session": {
-                            "id": session.id,
-                            "phone_number": phone_number,
-                            "status": "running",
-                            "total_cost": 0.0,
-                            "total_nodes": 0,
-                            "completed_nodes": 0,
-                            "failed_nodes": 0,
-                        },
+                        "session": await session_status_payload(
+                            session,
+                            status=SessionStatus.RUNNING,
+                            nodes=[],
+                            total_cost=0.0,
+                        ),
                     })
 
                     # Cancel any previous discovery
@@ -186,15 +218,12 @@ async def get_latest_session():
     nodes = await db.get_nodes_by_session(session.id)
     edges = await db.get_edges_by_session(session.id)
     return {
-        "session": {
-            "id": session.id,
-            "phone_number": session.phone_number,
-            "status": session.status.value if hasattr(session.status, 'value') else session.status,
-            "total_cost": session.total_cost,
-            "total_nodes": len(nodes),
-            "completed_nodes": sum(1 for n in nodes if n.status == "completed"),
-            "failed_nodes": sum(1 for n in nodes if n.status == "failed"),
-        },
+        "session": await session_status_payload(
+            session,
+            status=session.status,
+            nodes=nodes,
+            total_cost=session.total_cost,
+        ),
         "nodes": [n.model_dump() for n in nodes],
         "edges": [e.model_dump() for e in edges],
     }
@@ -210,15 +239,12 @@ async def get_session_by_id(session_id: str):
     nodes = await db.get_nodes_by_session(session.id)
     edges = await db.get_edges_by_session(session.id)
     return {
-        "session": {
-            "id": session.id,
-            "phone_number": session.phone_number,
-            "status": session.status.value if hasattr(session.status, 'value') else session.status,
-            "total_cost": session.total_cost,
-            "total_nodes": len(nodes),
-            "completed_nodes": sum(1 for n in nodes if n.status == "completed"),
-            "failed_nodes": sum(1 for n in nodes if n.status == "failed"),
-        },
+        "session": await session_status_payload(
+            session,
+            status=session.status,
+            nodes=nodes,
+            total_cost=session.total_cost,
+        ),
         "nodes": [n.model_dump() for n in nodes],
         "edges": [e.model_dump() for e in edges],
     }
@@ -260,6 +286,45 @@ async def create_optimization_report(session_id: str, payload: dict | None = Non
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("Failed to generate optimization report")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"report": report, "business_context": business_context}
+
+
+@app.get("/api/targets/{target_id}")
+async def get_target(target_id: str):
+    target = await db.get_target(target_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Target not found")
+    windows = await db.list_discovery_windows(target.id)
+    return {
+        "target": target.model_dump(mode="json"),
+        "windows": [window.model_dump(mode="json") for window in windows],
+        "budget": await db.get_budget_summary(target.id),
+    }
+
+
+@app.post("/api/targets/{target_id}/optimization-report")
+async def create_target_optimization_report(
+    target_id: str,
+    payload: dict | None = None,
+):
+    from report_generator import generate_target_optimization_report
+
+    payload = payload or {}
+    business_context = str(payload.get("business_context") or "")
+    force = bool(payload.get("force", False))
+    try:
+        report = await generate_target_optimization_report(
+            target_id,
+            business_context=business_context,
+            force=force,
+        )
+    except ReportNotReadyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to generate target optimization report")
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"report": report, "business_context": business_context}
 

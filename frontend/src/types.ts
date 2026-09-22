@@ -23,12 +23,23 @@ export interface IVREdge {
 
 export interface SessionInfo {
   id: string;
+  target_id?: string | null;
+  discovery_window_id?: string | null;
   phone_number: string;
   status: SessionStatus;
   total_cost: number;
   total_nodes: number;
   completed_nodes: number;
   failed_nodes: number;
+  planned_route?: 'human' | 'self-service' | null;
+  budget?: {
+    target_limit: number;
+    target_used: number;
+    target_remaining: number;
+    window_limit: number;
+    window_used: number;
+    window_remaining: number;
+  };
 }
 
 export interface ReportTimeRoute {
@@ -73,6 +84,9 @@ export interface OptimizationReport {
   generated_at?: string;
   phone_number?: string;
   business_context?: string;
+  target_id?: string;
+  draft?: boolean;
+  missing_routes?: string[];
 }
 
 // WebSocket message types

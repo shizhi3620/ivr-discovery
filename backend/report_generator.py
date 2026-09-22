@@ -9,7 +9,8 @@ from datetime import datetime, timezone
 import database as db
 import transcript_parser
 from ai import AIProvider, get_ai_provider
-from models import SessionStatus
+from discovery_windows import verification_failures
+from models import SessionStatus, WindowStatus
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,15 @@ async def generate_optimization_report(
     session = await db.get_session(session_id)
     if not session:
         raise ValueError("Session not found")
+
+    if session.target_id:
+        return await generate_target_optimization_report(
+            session.target_id,
+            business_context=business_context,
+            force=force,
+            provider=provider,
+        )
+
     if session.status != SessionStatus.COMPLETED:
         raise ReportNotReadyError(
             "The IVR discovery session must be completed before generating a report"
@@ -136,12 +146,90 @@ async def generate_optimization_report(
     return report
 
 
+async def generate_target_optimization_report(
+    target_id: str,
+    *,
+    business_context: str = "",
+    force: bool = False,
+    provider: AIProvider | None = None,
+) -> dict:
+    """Generate a Target report only after every required route is verified."""
+    target = await db.get_target(target_id)
+    if target is None:
+        raise ValueError("Target not found")
+
+    windows = await db.list_discovery_windows(target.id)
+    verified_routes = {
+        window.route
+        for window in windows
+        if window.status == WindowStatus.VERIFIED
+    }
+    missing_routes = [
+        route.value
+        for route in target.required_routes
+        if route not in verified_routes
+    ]
+    if missing_routes and not force:
+        raise ReportNotReadyError(
+            "The IVR target has unverified discovery windows: "
+            + ", ".join(missing_routes)
+        )
+
+    if not force:
+        cached = await db.get_target_optimization_report(target.id)
+        if cached and not cached[0].get("draft"):
+            return cached[0]
+
+    sessions = await db.get_sessions_by_target(target.id)
+    nodes = []
+    edges = []
+    for session in sessions:
+        nodes.extend(await db.get_nodes_by_session(session.id))
+        edges.extend(await db.get_edges_by_session(session.id))
+
+    context = _build_discovery_context(
+        phone_number=target.phone_number,
+        nodes=nodes,
+        edges=edges,
+        business_context=business_context or target.business_context,
+        target_id=target.id,
+        required_routes=[route.value for route in target.required_routes],
+        windows=windows,
+        draft=bool(missing_routes),
+    )
+
+    provider = provider or get_ai_provider()
+    raw = await provider.complete(
+        REPORT_PROMPT + json.dumps(context, ensure_ascii=False),
+        max_tokens=24000,
+        json_mode=False,
+    )
+    report = _normalize_report(transcript_parser._extract_json_object(raw))
+    report["generated_at"] = datetime.now(timezone.utc).isoformat()
+    report["phone_number"] = target.phone_number
+    report["target_id"] = target.id
+    report["business_context"] = business_context or target.business_context
+    report["draft"] = bool(missing_routes)
+    report["missing_routes"] = missing_routes
+
+    await db.save_target_optimization_report(
+        target.id,
+        report,
+        business_context=business_context or target.business_context,
+    )
+    return report
+
+
 def _build_discovery_context(
     *,
     phone_number: str,
     nodes: list,
     edges: list,
     business_context: str,
+    target_id: str | None = None,
+    required_routes: list[str] | None = None,
+    windows: list | None = None,
+    draft: bool = False,
 ) -> dict:
     edges_by_node: dict[str, list[dict]] = {}
     for edge in edges:
@@ -169,12 +257,34 @@ def _build_discovery_context(
             }
         )
 
-    return {
+    context = {
         "phone_number": phone_number,
         "business_context": business_context,
         "node_count": len(nodes),
         "nodes": node_payload,
     }
+    if target_id is not None:
+        context.update(
+            {
+                "target_id": target_id,
+                "required_routes": required_routes or [],
+                "draft": draft,
+                "windows": [
+                    {
+                        "id": window.id,
+                        "route": window.route.value,
+                        "starts_at": window.starts_at,
+                        "ends_at": window.ends_at,
+                        "status": window.status.value,
+                        "budget_used": window.budget_used,
+                        "budget_limit": window.budget_limit,
+                        "verification_failures": verification_failures(window),
+                    }
+                    for window in (windows or [])
+                ],
+            }
+        )
+    return context
 
 
 def _normalize_report(report: dict) -> dict:
@@ -216,6 +326,7 @@ def _list_of_strings(value) -> list[str]:
 
 __all__ = [
     "generate_optimization_report",
+    "generate_target_optimization_report",
     "ReportNotReadyError",
     "REPORT_PROMPT",
 ]

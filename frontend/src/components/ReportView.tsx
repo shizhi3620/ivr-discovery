@@ -37,7 +37,19 @@ function Section({
 }
 
 function reportToMarkdown(report: OptimizationReport): string {
-  const lines: string[] = [`# ${report.phone_number ?? 'IVR'} Optimization Report`, ''];
+  const draftSuffix = report.draft ? ' (DRAFT)' : '';
+  const lines: string[] = [
+    `# ${report.phone_number ?? 'IVR'} Optimization Report${draftSuffix}`,
+    '',
+  ];
+  if (report.draft) {
+    lines.push(
+      `> Draft report. Unverified required routes: ${
+        report.missing_routes?.join(', ') || 'unknown'
+      }.`,
+      ''
+    );
+  }
 
   for (const language of ['zh', 'en'] as const) {
     const section = report[language];
@@ -205,6 +217,15 @@ export function ReportView({
 
         {section && (
           <>
+            {report?.draft && (
+              <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+                Draft report: required discovery windows are still unverified
+                {report.missing_routes?.length
+                  ? ` (${report.missing_routes.join(', ')})`
+                  : ''}
+                . Do not treat this as the final bilingual report.
+              </div>
+            )}
             <Section title={language === 'zh' ? '执行摘要' : 'Executive summary'}>
               <p className="text-sm leading-6 text-gray-300 whitespace-pre-line">
                 {section.executive_summary}
