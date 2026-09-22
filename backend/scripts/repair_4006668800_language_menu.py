@@ -16,7 +16,7 @@ import database as db
 from models import Edge, Node, NodeStatus, RouteKind, WindowStatus
 
 TARGET_PHONE = "4006668800"
-CORRECTED_TRANSCRIPT = """欢迎致电Apple。
+CORRECTED_TRANSCRIPT = """感谢致电Apple。
 为了给您提供最好的服务。
 按照Apple隐私政策的规定，与本次通话相关的部分有限个人信息。
 可能会在中国大陆境外存储和处理。

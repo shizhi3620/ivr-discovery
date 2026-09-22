@@ -6,7 +6,7 @@
 
 同时，腾讯实时 ASR 会把 Apple 话术中的：
 
-- “欢迎致电Apple”识别成“点Apple”
+- “感谢致电Apple”识别成“点Apple”
 - “For technical support in English, press two”识别成“Export in English”
 
 项目决定：

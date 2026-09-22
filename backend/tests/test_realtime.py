@@ -28,7 +28,7 @@ def test_environment_asr_corrections(monkeypatch):
         "ASR_PHRASE_CORRECTIONS_JSON",
         json.dumps(
             {
-                "点Apple": "欢迎致电Apple",
+                "点Apple": "感谢致电Apple",
                     "Export in English": (
                         "For technical support in English, press two"
                     ),
@@ -41,7 +41,7 @@ def test_environment_asr_corrections(monkeypatch):
     )
     reset_asr_corrections()
     assert apply_asr_corrections("点Apple。 export in english") == (
-        "欢迎致电Apple。 For technical support in English, press two"
+        "感谢致电Apple。 For technical support in English, press two"
     )
     assert apply_asr_corrections("Support in English.") == (
         "For technical support in English, press two."
@@ -135,6 +135,32 @@ async def test_decision_stops_on_human_boundary():
             "reason": "strong human-service keyword",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_after_hours_hold_prompt_is_not_human_boundary():
+    events: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        events.append(event)
+
+    engine = RealtimeDecisionEngine(
+        channel_uuid="channel",
+        exploration_call_id="call",
+        target_key="1",
+        on_event=on_event,
+        menu_completion_ms=1000,
+        no_speech_timeout_ms=1000,
+    )
+    await engine.start()
+    await engine.feed(
+        "作为评估和培训客服人员，改进客服中心技术质量。请稍等。",
+        is_final=True,
+    )
+    await asyncio.sleep(0.05)
+    await engine.close()
+
+    assert events == []
 
 
 @pytest.mark.asyncio

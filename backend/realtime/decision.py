@@ -17,11 +17,12 @@ HUMAN_BOUNDARY_PATTERNS = (
     "人工客服",
     "为您转接",
     "正在转接",
-    "请稍等",
-    "排队",
+    "转接人工",
+    "接通人工",
     "representative",
-    "please hold",
     "transfer you to",
+    "connect you to an agent",
+    "live agent",
 )
 
 _DIGIT_WORDS = {
