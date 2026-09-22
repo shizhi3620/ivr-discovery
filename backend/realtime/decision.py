@@ -19,10 +19,18 @@ HUMAN_BOUNDARY_PATTERNS = (
     "正在转接",
     "转接人工",
     "接通人工",
+    "请稍等",
+    "排队",
     "representative",
+    "please hold",
     "transfer you to",
     "connect you to an agent",
     "live agent",
+)
+
+AFTER_HOURS_COMPLETE_PATTERN = re.compile(
+    r"作为评估和培训客服人员.{0,30}改进客服中心技术质量.{0,30}请稍等",
+    re.DOTALL,
 )
 
 _DIGIT_WORDS = {
@@ -87,7 +95,8 @@ def extract_dtmf_keys(text: str) -> set[str]:
 
 
 def has_human_boundary(text: str) -> bool:
-    lowered = text.lower()
+    cleaned = AFTER_HOURS_COMPLETE_PATTERN.sub("", text)
+    lowered = cleaned.lower()
     return any(pattern in lowered for pattern in HUMAN_BOUNDARY_PATTERNS)
 
 

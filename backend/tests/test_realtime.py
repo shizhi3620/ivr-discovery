@@ -11,7 +11,11 @@ import pytest
 
 from realtime.audio import decode_to_mono_pcm, resample_pcm16_mono
 from realtime.corrections import apply_asr_corrections, reset_asr_corrections
-from realtime.decision import RealtimeDecisionEngine, extract_dtmf_keys
+from realtime.decision import (
+    RealtimeDecisionEngine,
+    extract_dtmf_keys,
+    has_human_boundary,
+)
 from realtime.real_call_probe import RealCallProbe
 from realtime.tencent_asr import build_realtime_uri
 
@@ -161,6 +165,17 @@ async def test_after_hours_hold_prompt_is_not_human_boundary():
     await engine.close()
 
     assert events == []
+
+
+def test_hold_remains_human_risk_outside_complete_after_hours_sentence():
+    assert has_human_boundary("请稍等") is True
+    assert has_human_boundary("当前排队人数较多，请稍等") is True
+    assert has_human_boundary(
+        "作为评估和培训客服人员，改进客服中心技术质量。请稍等。"
+    ) is False
+    assert has_human_boundary(
+        "作为评估和培训客服人员，改进客服中心技术质量。请稍等。正在转人工"
+    ) is True
 
 
 @pytest.mark.asyncio
