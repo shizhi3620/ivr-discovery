@@ -96,6 +96,12 @@ export type ServerMessage =
   | { type: 'node_updated'; node_id: string; status: NodeStatus; prompt_text?: string; cost?: number; call_id?: string }
   | { type: 'edge_added'; edge: IVREdge }
   | { type: 'session_status'; session: SessionInfo }
+  | {
+      type: 'session_snapshot';
+      session: SessionInfo;
+      nodes: IVRNode[];
+      edges: IVREdge[];
+    }
   | { type: 'live_transcript'; node_id: string; text: string }
   | { type: 'subtree_cleared'; node_id: string; deleted_node_ids: string[]; deleted_edge_ids: string[] }
   | { type: 'error'; message: string };

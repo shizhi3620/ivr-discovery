@@ -158,6 +158,14 @@ function App() {
             window.history.pushState(null, '', `/${msg.session.id}`);
           }
           break;
+        case 'session_snapshot':
+          setSession(msg.session);
+          setNodes(msg.nodes);
+          setEdges(msg.edges);
+          if (msg.session.id && window.location.pathname === '/') {
+            window.history.pushState(null, '', `/${msg.session.id}`);
+          }
+          break;
         case 'live_transcript':
           setNodes((prev) =>
             prev.map((n) =>

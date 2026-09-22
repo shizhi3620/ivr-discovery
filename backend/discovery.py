@@ -314,7 +314,7 @@ async def finalize_window_for_session(session: Session) -> None:
         return
     nodes = await db.get_nodes_by_session(session.id)
     frontier = [
-        node.id
+        node.dtmf_path or "root"
         for node in nodes
         if node.status in (
             NodeStatus.PENDING,
@@ -469,6 +469,8 @@ async def run_discovery(
     phone_number: str,
     session: Session,
     provider: TelephonyProvider | None = None,
+    *,
+    resume: bool = False,
 ):
     """Run concurrent discovery of the IVR tree using a worker pool.
 
@@ -490,12 +492,41 @@ async def run_discovery(
     # Cycle detection: track fingerprints of all menus we've already explored
     seen_menus: set[frozenset[str]] = set()
 
-    # Create and enqueue root node
-    root = Node(session_id=session.id, dtmf_path="", status=NodeStatus.PENDING)
-    await db.create_node(root)
-    nodes_by_id[root.id] = root
-    await send_json(ws, {"type": "node_added", "node": root.model_dump()})
-    await queue.put((0, root.id, root))  # (depth, id for tiebreak, node)
+    resumed = False
+    if resume:
+        existing_nodes = await db.get_nodes_by_session(session.id)
+        if existing_nodes:
+            resumed = True
+            nodes_by_id = {node.id: node for node in existing_nodes}
+            edges = await db.get_edges_by_session(session.id)
+            edges_by_node: dict[str, list[dict]] = {}
+            for edge in edges:
+                edges_by_node.setdefault(edge.from_node_id, []).append(
+                    {"dtmf_key": edge.dtmf_key, "label": edge.label}
+                )
+            for node in existing_nodes:
+                if node.status == NodeStatus.COMPLETED:
+                    options = edges_by_node.get(node.id, [])
+                    if options:
+                        seen_menus.add(options_fingerprint(options))
+                if node.status in (NodeStatus.CALLING, NodeStatus.PARSING):
+                    await db.update_node(node.id, status=NodeStatus.PENDING)
+                    node.status = NodeStatus.PENDING
+                if node.status == NodeStatus.PENDING:
+                    depth = get_node_depth(node, nodes_by_id)
+                    await queue.put((depth, node.id, node))
+                    await send_json(
+                        ws,
+                        {"type": "node_added", "node": node.model_dump()},
+                    )
+
+    if not resumed:
+        # Create and enqueue root node
+        root = Node(session_id=session.id, dtmf_path="", status=NodeStatus.PENDING)
+        await db.create_node(root)
+        nodes_by_id[root.id] = root
+        await send_json(ws, {"type": "node_added", "node": root.model_dump()})
+        await queue.put((0, root.id, root))  # (depth, id for tiebreak, node)
 
     async def worker(worker_id: int):
         while True:

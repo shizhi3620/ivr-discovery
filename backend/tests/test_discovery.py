@@ -7,7 +7,13 @@ from datetime import datetime
 import pytest
 
 import database as db
-from discovery import options_fingerprint, get_node_depth, is_cycle, _core_label
+from discovery import (
+    options_fingerprint,
+    get_node_depth,
+    is_cycle,
+    run_discovery,
+    _core_label,
+)
 from discovery_windows import APP_TIMEZONE, get_current_window
 from models import Node, NodeStatus, Session, Target
 
@@ -140,6 +146,51 @@ class TestIsCycle:
     def test_empty_fingerprint(self):
         seen = {frozenset({"billing"})}
         assert not is_cycle(frozenset(), seen)
+
+
+@pytest.mark.asyncio
+async def test_run_discovery_resumes_existing_pending_node():
+    from unittest.mock import AsyncMock, MagicMock
+    from providers.base import CallResult, ProviderCapabilities, STATUS_COMPLETED
+
+    session = Session(phone_number="4006668800")
+    await db.create_session(session)
+    pending = Node(
+        session_id=session.id,
+        dtmf_path="1",
+        status=NodeStatus.PENDING,
+    )
+    await db.create_node(pending)
+
+    provider = MagicMock()
+    provider.name = "fake"
+    provider.capabilities = ProviderCapabilities(
+        transcript=True,
+        speech=True,
+        dtmf=True,
+    )
+    provider.place_call = AsyncMock(return_value="call-resume")
+    provider.wait_for_call = AsyncMock(
+        return_value=CallResult(
+            "call-resume",
+            STATUS_COMPLETED,
+            transcript="Resumed node returned a complete test transcript.",
+        )
+    )
+    ws = MagicMock()
+    ws.send_json = AsyncMock()
+
+    await run_discovery(
+        ws,
+        session.phone_number,
+        session,
+        provider,
+        resume=True,
+    )
+
+    nodes = await db.get_nodes_by_session(session.id)
+    assert [node.id for node in nodes] == [pending.id]
+    provider.place_call.assert_awaited_once()
 
 
 

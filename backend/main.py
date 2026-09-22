@@ -86,32 +86,68 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                         status=WindowStatus.RUNNING,
                         verified_at=None,
                     )
-                    session = Session(
-                        id=run_id,
-                        target_id=target.id,
-                        discovery_window_id=window.id,
-                        phone_number=phone_number,
-                        status=SessionStatus.RUNNING,
-                        planned_route=window.route,
-                        override_reason=override_reason,
-                        started_at=now.isoformat(),
+                    existing = await db.get_latest_session_for_window(window.id)
+                    resume = bool(
+                        existing
+                        and await db.session_has_pending_work(existing.id)
                     )
-                    await db.create_session(session)
-                    await send_json(websocket, {
-                        "type": "session_status",
-                        "session": await session_status_payload(
-                            session,
+                    if resume and existing is not None:
+                        session = existing
+                        await db.update_session(
+                            session.id,
                             status=SessionStatus.RUNNING,
-                            nodes=[],
-                            total_cost=0.0,
-                        ),
-                    })
+                            ended_at=None,
+                            override_reason=override_reason,
+                        )
+                        session.status = SessionStatus.RUNNING
+                        session.ended_at = None
+                        session.override_reason = override_reason
+                        nodes = await db.get_nodes_by_session(session.id)
+                        edges = await db.get_edges_by_session(session.id)
+                        await send_json(websocket, {
+                            "type": "session_snapshot",
+                            "session": await session_status_payload(
+                                session,
+                                status=SessionStatus.RUNNING,
+                                nodes=nodes,
+                            ),
+                            "nodes": [node.model_dump() for node in nodes],
+                            "edges": [edge.model_dump() for edge in edges],
+                        })
+                    else:
+                        session = Session(
+                            id=run_id,
+                            target_id=target.id,
+                            discovery_window_id=window.id,
+                            phone_number=phone_number,
+                            status=SessionStatus.RUNNING,
+                            planned_route=window.route,
+                            override_reason=override_reason,
+                            started_at=now.isoformat(),
+                        )
+                        await db.create_session(session)
+                        await send_json(websocket, {
+                            "type": "session_status",
+                            "session": await session_status_payload(
+                                session,
+                                status=SessionStatus.RUNNING,
+                                nodes=[],
+                                total_cost=0.0,
+                            ),
+                        })
 
                     # Cancel any previous discovery
                     if discovery_task and not discovery_task.done():
                         discovery_task.cancel()
 
-                    discovery_task = asyncio.create_task(run_discovery(websocket, phone_number, session))
+                    discovery_task = asyncio.create_task(
+                        run_discovery(
+                            websocket,
+                            phone_number,
+                            session,
+                            resume=resume,
+                        )
+                    )
 
                 except Exception as e:
                     logger.exception("Error starting discovery")

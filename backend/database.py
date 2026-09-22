@@ -315,6 +315,35 @@ async def get_sessions_by_window(window_id: str) -> list[Session]:
     return sessions
 
 
+async def get_latest_session_for_window(window_id: str) -> Session | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT * FROM sessions
+            WHERE discovery_window_id = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (window_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return Session(**dict(row)) if row else None
+
+
+async def session_has_pending_work(session_id: str) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT 1 FROM nodes
+            WHERE session_id = ? AND status IN ('pending', 'calling', 'parsing')
+            LIMIT 1
+            """,
+            (session_id,),
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+
 async def record_call_attempt(
     *,
     target_id: str,
