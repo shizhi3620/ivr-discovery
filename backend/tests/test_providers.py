@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import providers
+from audio.base import AudioCapabilities
 from providers.base import (
     CallResult,
     ProviderCapabilities,
@@ -17,6 +19,34 @@ from providers.base import (
 )
 from providers.bland_provider import BlandProvider
 from providers.esl import EslClient, EslConfig
+
+
+class FakeAudioProvider:
+    name = "fake"
+    capabilities = AudioCapabilities(transcription=True, synthesis=True)
+
+    def __init__(
+        self,
+        *,
+        configured: bool = True,
+        transcript: str = "Press 1 for billing.",
+    ):
+        self.is_configured = configured
+        self.transcript = transcript
+        self.transcribed_paths: list[Path] = []
+        self.synthesized: list[tuple[str, Path]] = []
+
+    async def transcribe(self, audio_path: str | Path) -> str:
+        path = Path(audio_path)
+        self.transcribed_paths.append(path)
+        return self.transcript
+
+    async def synthesize(self, text: str, output_path: str | Path) -> Path:
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"RIFF-tts")
+        self.synthesized.append((text, path))
+        return path
 
 
 class TestCallResult:
@@ -118,33 +148,39 @@ class TestBlandProvider:
 
 
 class TestAndroidSimCapabilities:
-    def test_advertises_no_transcript(self):
-        """The SIM gateway carries audio only; ASR is a separate stage."""
+    def test_advertises_no_transcript_without_audio_credentials(self):
+        """Never dial if Tencent ASR is not configured."""
         from providers.android_sim_provider import AndroidSimGatewayProvider
 
-        provider = AndroidSimGatewayProvider()
+        provider = AndroidSimGatewayProvider(
+            audio_provider=FakeAudioProvider(configured=False)
+        )
         assert provider.capabilities.transcript is False
         assert provider.capabilities.dtmf is True
 
     @pytest.mark.asyncio
-    async def test_speech_task_is_rejected(self):
+    async def test_refuses_to_dial_without_audio_credentials(self):
         from providers.android_sim_provider import AndroidSimGatewayProvider
 
-        provider = AndroidSimGatewayProvider()
-        with pytest.raises(NotImplementedError):
-            await provider.place_call("10010", voice_option="billing")
+        provider = AndroidSimGatewayProvider(
+            audio_provider=FakeAudioProvider(configured=False)
+        )
+        with pytest.raises(Exception, match="requires a configured Audio Provider"):
+            await provider.place_call("10010")
 
     @pytest.mark.asyncio
-    async def test_place_call_originates_with_gsm_header(self):
+    async def test_place_call_originates_with_gsm_header_and_recording(self, tmp_path):
         from providers.android_sim_provider import (
             AndroidSimGatewayProvider,
             GatewayConfig,
         )
 
         config = GatewayConfig(
-            domain="192.168.10.112", gateway_extension="gateway1"
+            domain="192.168.10.112",
+            gateway_extension="gateway1",
+            recording_dir=str(tmp_path / "recordings"),
         )
-        provider = AndroidSimGatewayProvider(config)
+        provider = AndroidSimGatewayProvider(config, audio_provider=FakeAudioProvider())
         captured: list[str] = []
 
         def fake_run(command: str) -> str:
@@ -159,13 +195,81 @@ class TestAndroidSimCapabilities:
         originate = next(c for c in captured if "originate" in c)
         assert "sip_h_X-GSM-Destination=10010" in originate
         assert "user/gateway1@192.168.10.112" in originate
+        assert "execute_on_answer=record_session::" in originate
+        assert str(tmp_path / "recordings") in originate
         assert call_id in originate
+        assert provider.capabilities.transcript is True
+        assert provider.capabilities.speech is True
+
+    @pytest.mark.asyncio
+    async def test_voice_option_is_synthesized_and_played(self, tmp_path):
+        from providers.android_sim_provider import (
+            AndroidSimGatewayProvider,
+            GatewayConfig,
+        )
+
+        audio = FakeAudioProvider()
+        provider = AndroidSimGatewayProvider(
+            GatewayConfig(
+                recording_dir=str(tmp_path / "recordings"),
+                dtmf_initial_delay=0,
+            ),
+            audio_provider=audio,
+        )
+        captured: list[str] = []
+
+        def fake_run(command: str) -> str:
+            captured.append(command)
+            return "+OK"
+
+        with patch.object(provider, "_run_api", side_effect=fake_run), patch(
+            "providers.android_sim_provider.asyncio.create_task"
+        ) as create_task:
+            call_id = await provider.place_call("10010", voice_option="查询话费")
+
+        assert audio.synthesized[0][0] == "查询话费"
+        create_task.assert_called_once()
+        create_task.call_args.args[0].close()
+
+        with patch.object(provider, "_run_api", side_effect=fake_run):
+            await provider._play_voice_after_answer(call_id, audio.synthesized[0][1])
+        assert any("uuid_broadcast" in command for command in captured)
+
+    @pytest.mark.asyncio
+    async def test_wait_for_call_transcribes_recording(self, tmp_path):
+        from providers.android_sim_provider import (
+            AndroidSimGatewayProvider,
+            GatewayConfig,
+        )
+
+        audio = FakeAudioProvider(transcript="按1查询话费。")
+        provider = AndroidSimGatewayProvider(
+            GatewayConfig(
+                recording_dir=str(tmp_path / "recordings"),
+                recording_finalize_timeout=0,
+            ),
+            audio_provider=audio,
+        )
+        recording = provider._recording_path("call-1")
+        recording.parent.mkdir(parents=True)
+        recording.write_bytes(b"RIFF")
+        callback = AsyncMock()
+
+        with patch.object(provider, "_run_api", return_value='{"rows":[]}'):
+            result = await provider.wait_for_call("call-1", on_transcript=callback)
+
+        assert result.status == STATUS_COMPLETED
+        assert result.transcript == "按1查询话费。"
+        assert audio.transcribed_paths == [recording]
+        callback.assert_awaited_once_with("按1查询话费。")
 
     @pytest.mark.asyncio
     async def test_get_call_reports_completed_when_channel_gone(self):
         from providers.android_sim_provider import AndroidSimGatewayProvider
 
-        provider = AndroidSimGatewayProvider()
+        provider = AndroidSimGatewayProvider(
+            audio_provider=FakeAudioProvider(configured=False)
+        )
         with patch.object(provider, "_run_api", return_value='{"rows":[]}'):
             result = await provider.get_call("gone")
         assert result.status == STATUS_COMPLETED
@@ -175,7 +279,9 @@ class TestAndroidSimCapabilities:
     async def test_get_call_reports_in_progress_while_channel_exists(self):
         from providers.android_sim_provider import AndroidSimGatewayProvider
 
-        provider = AndroidSimGatewayProvider()
+        provider = AndroidSimGatewayProvider(
+            audio_provider=FakeAudioProvider(configured=False)
+        )
         payload = '{"rows":[{"uuid":"live-call"}]}'
         with patch.object(provider, "_run_api", return_value=payload):
             result = await provider.get_call("live-call")

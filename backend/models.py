@@ -45,7 +45,7 @@ class Node(BaseModel):
     status: NodeStatus = NodeStatus.PENDING
     call_id: Optional[str] = None
     cost: float = 0.0
-    transcript: Optional[str] = None  # concatenated_transcript string from Bland AI
+    transcript: Optional[str] = None  # normalized transcript from the call provider
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 

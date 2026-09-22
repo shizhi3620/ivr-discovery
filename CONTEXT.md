@@ -32,6 +32,22 @@ _Avoid_: 录音识别、语音转文字
 将文本合成为可注入 IVR 上行电话链路的语音的能力。
 _Avoid_: 语音播放、语音克隆
 
+**音频 Provider**:
+封装录音转写和文本语音合成能力的接口，与承载电话链路的电话 Provider 分离。
+_Avoid_: 腾讯云客户端、ASR 工具类
+
+**腾讯云音频 Provider**:
+中国大陆场景默认的音频 Provider，使用 `8k_zh_large` 录音文件识别和 8 kHz `TextToVoice` 合成。
+_Avoid_: 默认 ASR 客户端、微信语音
+
+**AI Provider**:
+封装文本补全能力的接口，使转录解析不依赖具体模型厂商。
+_Avoid_: Claude 封装、DeepSeek 客户端
+
+**DeepSeek Provider**:
+中国大陆场景默认的 AI Provider，通过 OpenAI 兼容接口完成 IVR 转录解析。
+_Avoid_: 默认模型、国产 Claude
+
 **语音决策链路**:
 IVR 下行语音依次经过 ASR、文本决策模型和 TTS，形成对 IVR 的下一句话或下一项操作的闭环。
 _Avoid_: AI 通话、机器人链路
@@ -79,3 +95,7 @@ _Avoid_: 网关插件、SIM Provider
 **Bland Provider**:
 保留的非默认电话 Provider，用于维持既有演示与测试，不用于中国大陆真实外呼。
 _Avoid_: 默认 Provider、海外方案
+
+**通话录音**:
+Android SIM 网关接通后由 FreeSWITCH 保存的单次外呼 WAV，作为腾讯云文件 ASR 的输入。
+_Avoid_: 用户录音、通话监听

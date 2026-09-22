@@ -1,26 +1,26 @@
 # IVR Tree Discovery
 
-Automated IVR phone tree explorer. Enter any phone number and the system places real calls to discover and map out the entire menu structure as an interactive tree — in real time.
+Automated IVR phone tree explorer. Enter an authorized phone number and the system places real calls to discover and map out the menu structure as an interactive tree.
 
 **Live demo: https://ivr-tree-discovery-production.up.railway.app/**
 
 ## How It Works
 
-1. **Root call**: An AI agent calls the number and listens silently to the IVR greeting and menu options
-2. **Transcript parsing**: Claude Sonnet analyzes the call transcript and extracts structured menu options (DTMF keys + labels)
+1. **Root call**: The default Android SIM gateway places a real cellular call and records the IVR audio
+2. **Transcript parsing**: Tencent Cloud ASR transcribes the 8 kHz recording; DeepSeek extracts structured menu options (DTMF keys + labels)
 3. **BFS exploration**: Child nodes are queued in a priority queue (sorted by depth) and explored by a pool of 3 concurrent workers — true breadth-first traversal
-4. **Branch navigation**: For each menu option, a new call is placed where the agent intelligently waits for the menu to finish, then presses the correct key (or speaks the option for voice-based IVRs)
+4. **Branch navigation**: For each DTMF option, a new call is placed and the key is injected after the greeting. Voice-only options are synthesized to 8 kHz WAV with Tencent TTS and played into the call
 5. **Cycle detection**: Menus are fingerprinted by their option labels. Jaccard similarity (threshold 0.6) catches cases where the same IVR menu is paraphrased differently across calls
-6. **Real-time updates**: Everything streams to the browser over a single WebSocket connection — nodes appear and transition through states (pending → calling → parsing → completed) live
+6. **Live tree updates**: Node states stream over WebSocket while calls run. Tencent file ASR is asynchronous, so the full transcript arrives after the call ends
 
 ## Features
 
 - **Interactive tree visualization** with React Flow + dagre auto-layout
 - **Click any node** to see its full transcript, parsed options, call cost, and status
 - **Re-discover subtrees** — click re-discover on any node to re-explore that branch
-- **Handles edge cases**: dead ends, stale calls (auto-terminated after 15s of silence), busy lines (retry with backoff), voice-based IVRs, compound DTMF paths (depth 2+)
+- **Handles edge cases**: dead ends, busy lines (retry with backoff), short transcripts, voice-based IVRs, compound DTMF paths (depth 2+)
 - **Session persistence** — refresh the page and your tree is restored from SQLite
-- **Cost tracking** — running total of Bland AI call costs displayed in the status bar
+- **Cost tracking** — provider-reported call costs are displayed; the Android SIM path currently reports zero because carrier/SIM costs are not itemized
 
 ## Architecture
 
@@ -29,18 +29,21 @@ Browser (React + React Flow)
     ↕ WebSocket
 FastAPI Backend
     → Telephony Provider (pluggable)
-        ├── AndroidSimGatewayProvider — China mainland (default): FreeSWITCH ESL
+        ├── AndroidSimGatewayProvider — China mainland (default): FreeSWITCH ESL + WAV recording
         │     → rooted Android phone (SIM gateway) → carrier IVR
+        │     → Audio Provider: Tencent Cloud 8k ASR / TTS
         └── BlandProvider — non-default: Bland AI places calls + returns transcript
-    → Claude Sonnet (parses transcripts into structured menu options)
+    → DeepSeek (parses transcripts into structured menu options; Anthropic optional)
     → SQLite (persists sessions, nodes, edges)
 ```
 
 Telephony is behind a Provider seam (`backend/providers/`), selected with
 `TELEPHONY_PROVIDER` (`android_sim` default, or `bland`). Providers declare their
 capabilities, because they are not interchangeable: Bland returns its own ASR
-transcript, while the Android SIM gateway only carries audio. See
-[docs/adr/0004](docs/adr/0004-telephony-provider-boundary.md).
+transcript, while the Android SIM gateway records audio and delegates ASR/TTS to
+the separate Audio Provider. See
+[docs/adr/0004](docs/adr/0004-telephony-provider-boundary.md) and the
+[Tencent Cloud API note](docs/research/tencent-cloud-8k-asr-tts.md).
 
 See [architecture.md](architecture.md) for the full system design with sequence diagrams.
 
@@ -48,7 +51,9 @@ See [architecture.md](architecture.md) for the full system design with sequence 
 
 - **Backend**: Python 3.12, FastAPI, asyncio, aiosqlite
 - **Frontend**: React 18, TypeScript, Vite, React Flow, Dagre, Tailwind CSS
-- **AI**: Claude Sonnet (transcript parsing), Bland AI (telephony)
+- **AI**: DeepSeek (default), Anthropic optional
+- **Audio**: Tencent Cloud `8k_zh_large` ASR + `TextToVoice` TTS
+- **Telephony**: rooted Android SIM gateway via FreeSWITCH (default), Bland optional
 - **Data**: SQLite (zero-config, file-based)
 - **Realtime**: WebSocket (bidirectional, single connection)
 
@@ -57,7 +62,7 @@ See [architecture.md](architecture.md) for the full system design with sequence 
 ```bash
 # Backend
 cd backend
-cp .env.example .env  # Add your BLAND_API_KEY and ANTHROPIC_API_KEY
+cp .env.example .env  # Add DeepSeek and Tencent Cloud credentials
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 python -m uvicorn main:app --reload
@@ -70,6 +75,10 @@ npm run dev
 
 Open http://localhost:5173
 
+For the China mainland path, configure FreeSWITCH, register the Android gateway,
+and start FreeSWITCH before the backend. See
+[gateway/freeswitch/README.md](gateway/freeswitch/README.md).
+
 ## Project Structure
 
 ```
@@ -77,7 +86,10 @@ backend/
 ├── main.py              # FastAPI app, WebSocket handler, REST endpoints
 ├── discovery.py         # Worker pool, BFS orchestration, cycle detection
 ├── bland_client.py      # Bland AI API client, call management
-├── transcript_parser.py # Claude-powered transcript → structured options
+├── transcript_parser.py # AI Provider powered transcript → structured options
+├── ai/                  # DeepSeek / Anthropic text-model boundary
+├── audio/               # Tencent Cloud ASR/TTS boundary
+├── providers/           # Telephony Provider boundary
 ├── database.py          # SQLite CRUD (aiosqlite)
 ├── models.py            # Pydantic models + SQL schema
 └── tests/               # pytest suite

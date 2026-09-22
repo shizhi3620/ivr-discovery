@@ -2,6 +2,11 @@
 
 Key architectural and design decisions made during implementation, with alternatives considered and reasoning.
 
+> China mainland update (2026-09-22): the original sections below describe the
+> Bland + Claude demo. The current default is Android SIM + FreeSWITCH, Tencent
+> Cloud 8 kHz ASR/TTS and DeepSeek. Bland and Anthropic remain optional
+> implementations behind their respective Provider boundaries.
+
 ---
 
 ## 1. Concurrency Model: Worker Pool with asyncio.Queue vs Recursive asyncio.gather
@@ -197,3 +202,42 @@ Key architectural and design decisions made during implementation, with alternat
 - **WebSocket replay**: Server replays all events on reconnect. Complex, requires event sourcing.
 
 **Why REST restore wins**: Simple — on page load, call recover-stuck (fixes nodes left in "calling" by a server restart), then fetch the full session state. Source of truth stays in SQLite. Works across restarts, reloads, and tab closures.
+
+---
+
+## 16. AI Vendor Boundary: DeepSeek Default vs Direct Anthropic Calls
+
+**Chosen**: Keep transcript parsing behind `AIProvider`; use DeepSeek by default for China mainland.
+
+**Alternatives considered**:
+
+- **Direct Anthropic calls**: fast to implement, but unavailable as the default in the target region and couples the parser to one vendor.
+- **Local model only**: avoids network dependency, but the target Mac/Jetson hardware is not a reliable baseline for Chinese ASR/IVR reasoning quality.
+
+**Why the boundary wins**: `transcript_parser.py` stays vendor-neutral, DeepSeek works in China with an OpenAI-compatible API, and Anthropic remains selectable for the original demo.
+
+---
+
+## 17. ASR/TTS Placement: Separate Audio Provider vs Vendor Logic Inside Telephony
+
+**Chosen**: A separate `AudioProvider` owns speech processing; the Android telephony provider owns recording, DTMF and playback.
+
+**Alternatives considered**:
+
+- **Call Tencent APIs directly from `AndroidSimGatewayProvider`**: fewer classes, but mixes carrier transport with speech vendors and makes testing require telephone state.
+- **Rely on FreeSWITCH modules for ASR/TTS**: keeps audio local, but requires additional services/models and less predictable Mandarin telephone quality.
+
+**Why the boundary wins**: Tencent's `8k_zh_large` and `TextToVoice` can be mocked independently, the transport provider only exposes audio files, and a future local ASR/TTS implementation can replace Tencent without touching FreeSWITCH/ESL code.
+
+---
+
+## 18. Call Recording: FreeSWITCH `record_session` vs Post-Answer `uuid_record`
+
+**Chosen**: Start `record_session` via `execute_on_answer` during `originate`, with `RECORD_STEREO=true`.
+
+**Alternatives considered**:
+
+- **Poll then call `uuid_record` after answer**: risks missing the first seconds of the IVR greeting while waiting for state detection.
+- **Record only on the phone**: the upstream Android gateway does not provide a stable per-call recording contract.
+
+**Why `record_session` wins**: recording starts at answer, preserves the IVR greeting, and leaves one deterministic WAV per provider call id for Tencent file ASR.

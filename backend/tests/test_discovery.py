@@ -120,7 +120,7 @@ class TestIsCycle:
     def test_fuzzy_match_usps_scenario(self):
         """Simulates the USPS bug: same menu parsed with different parenthetical descriptions."""
         seen = {frozenset({"package", "mail", "tools", "stamps", "alerts", "other"})}
-        # Claude parsed the same menu with only 4 options this time
+        # The model parsed the same menu with only 4 options this time
         fp = frozenset({"package", "mail", "tools", "stamps"})
         # 4/6 overlap = 0.67 > 0.6 threshold
         assert is_cycle(fp, seen)

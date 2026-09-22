@@ -51,7 +51,7 @@ def is_cycle(fingerprint: frozenset[str], seen_menus: set[frozenset[str]], thres
     """Check if a fingerprint is a fuzzy match to any previously seen menu.
 
     Uses Jaccard similarity — if >threshold of core labels overlap, it's a cycle.
-    This handles cases where Claude paraphrases the same IVR menu differently.
+    This handles cases where the model paraphrases the same IVR menu differently.
     """
     if fingerprint in seen_menus:
         return True
@@ -108,14 +108,13 @@ async def explore_node(
                 "text": text,
             })
 
-        # Discovery is transcript-driven. A provider without ASR cannot feed the
-        # parser, so fail fast *without dialing* rather than placing a real call
-        # that could produce nothing (see docs/adr/0004). The Android SIM path
-        # becomes usable once the ASR/TTS stage lands.
+        # Discovery is transcript-driven. A provider without a configured ASR
+        # backend cannot feed the parser, so fail fast *without dialing* rather
+        # than spending a real cellular call that could produce nothing.
         if not provider.capabilities.transcript:
             message = (
                 f"Provider '{provider.name}' has no transcript capability; "
-                "ASR stage is not wired in yet"
+                "configure the Audio Provider before starting discovery"
             )
             logger.warning("Node %s: %s", node.id[:8], message)
             await db.update_node(node.id, status=NodeStatus.FAILED, prompt_text=message)
@@ -195,7 +194,7 @@ async def explore_node(
             "cost": cost,
         })
 
-        # Parse transcript with Claude
+        # Parse transcript with the configured AI Provider
         parsed = await transcript_parser.parse_transcript(concatenated)
         prompt_text = parsed.get("prompt_text", concatenated[:200])
         options = parsed.get("options", [])

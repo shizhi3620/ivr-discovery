@@ -6,6 +6,8 @@ venv/
 .env
 *.db
 .pytest_cache/
+recordings/
+backend/recordings/
 
 # Node
 node_modules/

@@ -5,166 +5,132 @@
 ```mermaid
 graph TB
     subgraph Frontend["Frontend (React + Vite)"]
-        UI[Phone Input + Controls<br/>Stop / Clear / URL routing]
+        UI[Phone Input + Controls]
         TV[Tree Visualization<br/>React Flow + Dagre]
-        ND[Node Detail Panel<br/>+ Re-discover]
-        ST[Progress / Cost Bar]
+        ND[Node Detail Panel]
     end
 
     subgraph Backend["Backend (FastAPI)"]
         WS[WebSocket Endpoint]
         DE[Discovery Engine<br/>PriorityQueue Worker Pool]
-        TP[Transcript Parser<br/>Claude Sonnet]
-        HT[Human Transfer Detector<br/>Claude Haiku]
-        BC[Bland AI Client]
+        TP[Transcript Parser]
+        TEL[Telephony Provider<br/>Android SIM default]
+        AUD[Audio Provider<br/>Tencent Cloud]
+        AI[AI Provider<br/>DeepSeek default]
         DB[(SQLite)]
-        RE[REST Endpoints<br/>recover-stuck, sessions]
     end
 
-    subgraph External["External Services"]
-        BA[Bland AI API]
-        CL[Claude API<br/>Sonnet + Haiku]
-        PH[Target IVR]
+    subgraph Carriers["China Mainland Call Path"]
+        FS[FreeSWITCH]
+        AND[Rooted Android Phone<br/>SIM Gateway]
+        IVR[Target IVR]
     end
 
-    UI -- "start_discovery / cancel<br/>rediscover_subtree" --> WS
-    WS -- "node_added / node_updated<br/>edge_added / session_status<br/>live_transcript / subtree_cleared" --> TV
-    WS -- "node details" --> ND
-    WS -- "cost + progress" --> ST
-
-    UI -- "restore session on load" --> RE
-    RE <--> DB
-
-    WS <--> DE
-    DE --> BC
+    UI --> WS
+    WS --> DE
+    DE --> TEL
     DE --> TP
-    BC --> HT
+    TEL --> AUD
+    TP --> AI
     DE <--> DB
-
-    BC -- "POST /v1/calls" --> BA
-    BC -- "GET /v1/calls/{id}" --> BA
-    BC -- "POST /v1/calls/{id}/stop" --> BA
-    BA -- "Places call" --> PH
-    TP -- "Parse transcript" --> CL
-    HT -- "yes/no transfer?" --> CL
+    TEL --> FS
+    FS --> AND
+    AND --> IVR
+    WS --> TV
+    WS --> ND
 ```
 
-## How Discovery Works
+The default path is `android_sim`. Bland remains selectable for the original
+overseas demo, but it is not part of the China mainland baseline.
 
-### Call Placement Strategy
+## Components
 
-There are three types of calls, each with a different AI agent behavior:
+### Discovery Engine
 
-1. **Root call** — Agent stays completely silent. IVRs read their full menu after a pause. If the IVR asks an open-ended question ("What can I help you with?"), the agent says "What are my options?" exactly once, then goes silent forever.
+`backend/discovery.py` owns BFS orchestration, retry policy, cycle detection and
+WebSocket updates. It uses three concurrent workers (`MAX_CONCURRENT_CALLS = 3`)
+pulling from a depth-priority queue. A node is only expanded after its transcript
+has been parsed.
 
-2. **DTMF branch call (depth 1)** — Agent listens to the full menu, then presses the target key (e.g. `3`). No `precall_dtmf_sequence` — the agent intelligently waits for the right moment. After pressing, goes silent to hear the submenu.
+### Telephony Provider
 
-3. **DTMF branch call (depth 2+)** — Compound path like `"1w3"`. The prefix keys (`"1"`) are sent via `precall_dtmf_sequence` (with wait padding), and the agent presses the last key (`"3"`) after hearing the submenu. This is a hybrid: automated navigation for known path + intelligent timing for the final key.
+`backend/providers/` defines a vendor-neutral call boundary:
 
-4. **Voice branch call** — For conversational IVRs with no DTMF keys (e.g. "say billing"). Agent speaks the exact option phrase, then goes silent.
+- `AndroidSimGatewayProvider` originates a real cellular call through FreeSWITCH
+  ESL, sends `X-GSM-Destination`, records both call legs, injects DTMF and plays
+  TTS prompts.
+- `BlandProvider` keeps the original cloud call/ASR behavior available.
 
-### Worker Pool + BFS
+Providers advertise only the capabilities they can actually deliver. The Android
+provider reports ASR/TTS as available only when Tencent credentials are present;
+otherwise discovery refuses to spend a real call.
 
-The discovery engine uses a **PriorityQueue worker pool** — 5 concurrent workers pulling from a priority queue keyed by depth. This ensures true breadth-first exploration: all depth-1 nodes are explored before any depth-2 nodes, regardless of which worker finishes first.
+### Audio Provider
 
+`backend/audio/` separates speech processing from telephony:
+
+- `TencentAudioProvider.transcribe()` submits a local WAV with `CreateRecTask`
+  (`SourceType=1`, `8k_zh_large`) and polls `DescribeTaskStatus`.
+- `TencentAudioProvider.synthesize()` calls `TextToVoice` with an 8 kHz WAV
+  response and writes the result to a local file for FreeSWITCH playback.
+- TC3-HMAC-SHA256 signing is implemented locally with `httpx`; no Tencent SDK is
+  required.
+
+Tencent file ASR is asynchronous. The frontend may show a `calling` node while
+the call is live, but the full transcript only becomes available after hangup and
+ASR completion.
+
+### AI Provider
+
+`backend/ai/` separates transcript understanding from the model vendor:
+
+- DeepSeek is the default OpenAI-compatible provider.
+- Anthropic remains available by setting `AI_PROVIDER=anthropic`.
+- `transcript_parser.py` consumes the provider boundary and owns JSON validation,
+  deduplication and navigation-option filtering.
+
+## Call Lifecycle
+
+```mermaid
+sequenceDiagram
+    participant U as Browser
+    participant D as Discovery Engine
+    participant T as Android SIM Provider
+    participant F as FreeSWITCH
+    participant P as Phone / IVR
+    participant A as Tencent ASR
+    participant M as DeepSeek
+
+    U->>D: start_discovery(phone_number)
+    D->>T: place_call(phone_number)
+    T->>F: ESL originate + record_session
+    F->>P: GSM/VoLTE outbound call
+    P-->>F: IVR audio
+    opt navigate branch
+        T->>F: uuid_send_dtmf
+    end
+    F-->>T: WAV recording after hangup
+    T->>A: CreateRecTask(local WAV)
+    A-->>T: DescribeTaskStatus(success, Result)
+    T-->>D: CallResult(transcript)
+    D->>M: parse transcript
+    M-->>D: prompt_text + options
+    D-->>U: node_added / edge_added / completed
 ```
-PriorityQueue: (depth=0, root) → (depth=1, child1) → (depth=1, child2) → ... → (depth=2, grandchild1)
-                                  ↑ always dequeued before depth-2 nodes
-```
 
-### Per-Node Lifecycle
+## Node Lifecycle
 
 ```mermaid
 stateDiagram-v2
     [*] --> pending: Created
     pending --> calling: Worker picks up
-    calling --> parsing: Call completed
-    calling --> failed: Call error / timeout
-    parsing --> completed: Claude parsed transcript
-    parsing --> failed: Parse error
+    calling --> parsing: Call + ASR complete
+    calling --> failed: Carrier / ASR / provider error
+    parsing --> completed: Options extracted
+    parsing --> failed: Parse failure
     completed --> [*]
     failed --> [*]
 ```
-
-Each node goes through: **pending → calling → parsing → completed/failed**. The frontend renders each state with distinct styling (gray → yellow pulse → green/red).
-
-### Full Sequence
-
-```mermaid
-sequenceDiagram
-    participant U as Browser
-    participant W as WebSocket
-    participant D as Discovery Engine<br/>(5 workers)
-    participant B as Bland AI
-    participant P as IVR System
-    participant H as Claude Haiku<br/>(transfer check)
-    participant S as Claude Sonnet<br/>(transcript parser)
-
-    U->>W: start_discovery("+1-800-275-8777")
-    W->>D: Create session + root node
-
-    Note over D: Worker 0 picks up root (depth=0)
-    D->>B: POST /v1/calls (silent listener)
-    B->>P: Call target number
-    loop Poll every 3s
-        D->>B: GET /v1/calls/{id}
-        B-->>D: transcript (growing)
-        D-->>U: live_transcript
-        Note over D,H: Every 50+ chars of growth
-        D->>H: Is this a human transfer?
-        H-->>D: "no"
-    end
-    P-->>B: "Press 1 for tracking, Press 2 for stamps..."
-    B-->>D: completed + full transcript
-    D->>S: Parse transcript → JSON
-    S-->>D: [{key:"1", label:"Tracking"}, {key:"2", label:"Stamps"}, ...]
-    D-->>U: node_updated(completed) + node_added × N + edge_added × N
-
-    Note over D: Workers 0-4 pick up children (depth=1) — true BFS
-    par Worker 0: Key 1
-        D->>B: POST /v1/calls (agent presses 1 after menu)
-        B->>P: Call → agent waits → presses 1
-        P-->>B: submenu transcript
-        D->>S: Parse → options
-        D-->>U: node_updated, edge_added
-    and Worker 1: Key 2
-        D->>B: POST /v1/calls (agent presses 2 after menu)
-        B->>P: Call → agent waits → presses 2
-        P-->>B: submenu transcript
-        D->>S: Parse → options
-        D-->>U: node_updated, edge_added
-    and Worker 2-4: Keys 3, 4, 5
-        Note over D,B: All depth-1 nodes run in parallel
-    end
-
-    Note over D: Only after ALL depth-1 done, depth-2 begins
-```
-
-## Cycle Detection
-
-Menus are fingerprinted by extracting the **core label** (stripping parenthetical descriptions) and building a `frozenset`:
-
-```
-"Package (track status, delivery issues)" → "package"
-"Mail (daily services, pickup)"           → "mail"
-Fingerprint: frozenset({"package", "mail", "tools", "stamps"})
-```
-
-Detection uses **Jaccard similarity** (threshold 0.6) against all previously seen menus. This catches cases where Claude paraphrases the same IVR menu differently across calls — e.g. one call returns 4 options, another returns 6, but they share 4 core labels (Jaccard = 4/6 = 0.67 > 0.6 → cycle).
-
-## Human Transfer Detection
-
-**Dual-layer approach** — fast real-time detection + thorough post-call analysis:
-
-1. **During polling** (real-time): Every time the transcript grows by 50+ chars, Claude Haiku (~200ms) analyzes the last 500 chars. If a real human has picked up or the IVR explicitly transfers to a representative → `stop_call()` immediately. Distinguishes actual transfers ("transferring you to a representative") from timeout fallbacks ("please wait while we connect your call").
-
-2. **After parsing** (post-call): Claude Sonnet's transcript parser sets `human_transfer: true` if it detects a live agent answered. Catches subtler cases.
-
-After early termination for human transfer, the transcript is **still parsed** — any menu options read before the transfer are extracted and child nodes are created.
-
-## Stale Call Detection
-
-If the transcript hasn't grown for 5 consecutive polls (~15s), the call is stopped. This handles IVRs that hang up without changing the Bland AI call status to "completed".
 
 ## Data Model
 
@@ -177,7 +143,7 @@ erDiagram
     SESSION {
         string id PK
         string phone_number
-        string status "pending | running | completed | failed"
+        string status
         float total_cost
         datetime created_at
     }
@@ -185,14 +151,14 @@ erDiagram
     NODE {
         string id PK
         string session_id FK
-        string parent_id FK "nullable (root = null)"
-        string dtmf_path "e.g. 1w3w2"
-        string voice_option "phrase for voice IVRs"
-        string prompt_text "parsed IVR prompt summary"
-        string status "pending | calling | parsing | completed | failed"
-        string call_id "Bland AI call ID"
+        string parent_id FK
+        string dtmf_path
+        string voice_option
+        string prompt_text
+        string status
+        string call_id
         float cost
-        string transcript "concatenated call transcript"
+        string transcript
         datetime created_at
     }
 
@@ -200,100 +166,70 @@ erDiagram
         string id PK
         string from_node_id FK
         string to_node_id FK
-        string dtmf_key "1, 2, *, #, say1, etc."
-        string label "e.g. Billing"
+        string dtmf_key
+        string label
     }
 ```
 
 ## WebSocket Protocol
 
-A single WebSocket connection handles both commands and updates:
-
 | Direction | Message | Purpose |
 |-----------|---------|---------|
 | Client → Server | `start_discovery` | Begin exploring a phone number |
 | Client → Server | `cancel` | Stop current discovery |
-| Client → Server | `rediscover_subtree` | Re-explore a node and its children |
+| Client → Server | `rediscover_subtree` | Re-explore a node and its descendants |
 | Client → Server | `ping` | Keep-alive |
-| Server → Client | `node_added` | New node created (pending) |
-| Server → Client | `node_updated` | Status, cost, prompt, or call_id changed |
+| Server → Client | `node_added` | New node created |
+| Server → Client | `node_updated` | Status, cost, prompt or call id changed |
 | Server → Client | `edge_added` | Menu option discovered |
-| Server → Client | `session_status` | Progress, total cost, node counts |
-| Server → Client | `live_transcript` | Partial transcript while call is active |
+| Server → Client | `session_status` | Progress and provider-reported cost |
+| Server → Client | `live_transcript` | Final transcript callback (file ASR is not streaming) |
 | Server → Client | `subtree_cleared` | Children deleted for re-discovery |
 | Server → Client | `error` | Error message |
 
-## REST Endpoints
-
-| Endpoint | Purpose |
-|----------|---------|
-| `GET /api/health` | Health check |
-| `GET /api/recover-stuck` | Fix nodes stuck in calling/parsing after server restart |
-| `GET /api/sessions/latest` | Get most recent session + all nodes/edges |
-| `GET /api/sessions/{id}` | Get specific session + all nodes/edges |
-| `GET /api/nodes/{id}` | Get full node details |
-
-## Frontend Architecture
-
-- **URL routing**: `/` = landing page, `/{sessionId}` = discovery view. Uses `history.pushState` (no React Router).
-- **Session restore**: On mount, if URL has a session ID, calls `/api/recover-stuck` then `/api/sessions/{id}` to restore state.
-- **Tree rendering**: React Flow with dagre auto-layout (TB direction, 80px nodesep, 120px ranksep). Custom `IVRNodeComponent` with status-colored styling.
-- **Node types**: Normal (status-colored), Human transfer (violet with ☎), Cycle detected (orange with ↻).
-- **Controls**: Phone input + Discover button, Stop (red, during discovery), Clear (gray, after discovery).
-
-## Edge Case Handling
+## Edge Cases
 
 | Scenario | Handling |
 |----------|----------|
-| Repeated menu (cycle) | Fuzzy fingerprint matching (Jaccard > 0.6), strips parenthetical descriptions |
-| Dead end (no options) | Mark as leaf node, stop recursing |
-| Call failure | Mark node as failed, continue other branches |
-| Call timeout | 180s poll timeout, mark as failed |
-| Stale transcript | Stop call after 5 polls (~15s) with no growth |
-| Human transfer | Claude Haiku detects in real-time → stop_call(); still parses options |
-| Short/empty transcript | Retry once for root calls (MIN_TRANSCRIPT_LENGTH = 20) |
-| Duplicate options (DTMF + voice) | Parser deduplicates, keeps DTMF version |
-| Navigation options ("repeat", "go back") | Filtered out by SKIP_LABELS set |
-| DTMF timing | Agent waits for menu to finish before pressing key (not precall) |
-| Server restart mid-discovery | `/api/recover-stuck` fetches final state from Bland AI |
-| Rate limiting (429) | Exponential backoff retry in place_call() |
-| Conversational IVR | Agent says "What are my options?" once, then goes silent |
+| Repeated menu | Fuzzy Jaccard fingerprinting, threshold 0.6 |
+| Dead end | Mark leaf node, do not recurse |
+| Busy line | Retry with backoff |
+| Short/empty transcript | Retry up to three calls |
+| Missing ASR configuration | Fail before dialing |
+| ASR task failure | Mark the node failed without another real call |
+| Call timeout | FreeSWITCH scheduled `uuid_kill` at `max_duration` |
+| Voice-only IVR option | Tencent TTS → local WAV → `uuid_broadcast` |
+| Server restart | `/api/recover-stuck` reconciles persisted call ids |
 
 ## File Structure
 
-```
+```text
 backend/
-├── main.py              # FastAPI app, WebSocket handler, REST endpoints
-├── discovery.py          # Worker pool, BFS orchestration, cycle detection
-├── bland_client.py       # Bland AI API client, call management, human transfer detection
-├── transcript_parser.py  # Claude-powered transcript → structured options
-├── database.py           # SQLite CRUD (aiosqlite)
-├── models.py             # Pydantic models + SQL schema
+├── main.py
+├── discovery.py
+├── transcript_parser.py
+├── ai/
+│   ├── base.py
+│   ├── deepseek_provider.py
+│   └── anthropic_provider.py
+├── audio/
+│   ├── base.py
+│   └── tencent_provider.py
+├── providers/
+│   ├── base.py
+│   ├── android_sim_provider.py
+│   ├── bland_provider.py
+│   └── esl.py
+├── database.py
+├── models.py
 └── tests/
-    ├── conftest.py        # Temp DB fixture
-    ├── test_discovery.py  # Fingerprint, depth, cycle detection tests
-    ├── test_parser.py     # Normalize, dedup, parse tests
-    └── test_models.py     # CRUD, delete_subtree tests
-
-frontend/
-├── src/
-│   ├── App.tsx            # Main app, URL routing, WebSocket message handler
-│   ├── types.ts           # TypeScript types matching backend models
-│   ├── hooks/
-│   │   └── useWebSocket.ts # WebSocket hook with auto-reconnect
-│   └── components/
-│       ├── Controls.tsx    # Phone input, Discover/Stop/Clear buttons
-│       ├── TreeView.tsx    # React Flow canvas with dagre layout
-│       ├── IVRNode.tsx     # Custom node component (status colors, badges)
-│       └── NodeDetail.tsx  # Side panel with transcript, options, re-discover
-└── vite.config.ts         # Proxy /ws and /api to backend
 ```
 
 ## Tech Stack
 
-- **Backend**: Python 3.12, FastAPI, asyncio, aiosqlite
-- **Frontend**: React 18, TypeScript, Vite, React Flow, Dagre, Tailwind CSS
-- **AI**: Claude Sonnet (transcript parsing), Claude Haiku (human transfer detection)
-- **Telephony**: Bland AI for placing and recording calls
-- **Data**: SQLite (file-based, zero-config)
-- **Realtime**: WebSocket (bidirectional, single connection)
+- Backend: Python 3.12+, FastAPI, asyncio, `httpx`, `aiosqlite`
+- Frontend: React 18, TypeScript, Vite, React Flow, Dagre
+- AI: DeepSeek default, Anthropic optional
+- Audio: Tencent Cloud `8k_zh_large` ASR and `TextToVoice` TTS
+- Telephony: Homebrew FreeSWITCH + rooted Android SIM gateway
+- Storage: SQLite

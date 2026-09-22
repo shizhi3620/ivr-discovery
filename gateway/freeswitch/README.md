@@ -75,6 +75,22 @@ Android 网关使用 PJSIP，必须关闭 SRTP 才能与本机的明文 RTP 互�
 `10010` 仅用于人工监督下的单次冒烟测试。当前 `+86` 长号尚未加入拨号计划。要扩展号码范围，需同时修改
 `conf/dialplan/default.xml` 的匹配表达式和 `docs/adr/0003` 中的白名单边界。
 
+## 后端外呼录音与 ASR
+
+后端默认通过 FreeSWITCH ESL 发起外呼，并在接通时执行：
+
+```text
+execute_on_answer=record_session::/tmp/ivr-discovery-recordings/<call-id>.wav
+RECORD_STEREO=true
+```
+
+因此运行后端的用户必须对 `CALL_RECORDING_DIR` 有写权限。默认目录是
+`/tmp/ivr-discovery-recordings`，可通过 `backend/.env` 覆盖；不要使用包含空格、
+逗号、花括号或引号的路径，这些字符会破坏 FreeSWITCH originate 变量解析。
+
+录音结束后，后端把 WAV 提交给腾讯云 `8k_zh_large` 做文件识别。`10010`
+人工软电话验证不使用后端 Provider，因此不会自动生成该录音。
+
 ## 停止
 
 ```bash

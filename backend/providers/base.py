@@ -4,10 +4,9 @@ The discovery engine must not know which vendor actually places a call. It asks 
 Provider to place a call, wait for it, and hand back a normalized result.
 
 Providers differ in what they can deliver. A cloud voice-AI provider (Bland)
-returns an ASR transcript for free; a raw carrier gateway (Android SIM) only
-delivers audio, so its transcript stays empty until the ASR stage is wired in.
-The `capabilities` field makes that difference explicit instead of pretending all
-providers are interchangeable.
+returns its own ASR transcript; a carrier gateway (Android SIM) records audio and
+delegates ASR/TTS to the separate Audio Provider. The `capabilities` field makes
+that difference explicit instead of pretending all providers are interchangeable.
 """
 
 from __future__ import annotations

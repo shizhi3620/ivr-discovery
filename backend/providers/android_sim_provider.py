@@ -6,22 +6,27 @@ talks to FreeSWITCH over ESL, originates a call to the registered gateway
 extension, and passes the GSM destination in the `X-GSM-Destination` SIP header
 (see gateway/freeswitch/README.md).
 
-This provider deliberately advertises `transcript=False`: the SIM gateway only
-carries audio. ASR/TTS are a separate stage (docs/adr/0004) and are not wired in
-yet, so callers must not expect a transcript from this provider.
+The SIM gateway carries audio; Tencent Cloud provides the ASR/TTS stage behind
+the Audio Provider boundary. If Tencent credentials are absent, this provider
+advertises no transcript/speech capability and refuses to dial, rather than
+wasting a real cellular call.
 """
 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import uuid as uuid_lib
 from dataclasses import dataclass
+from pathlib import Path
 
+from audio import AudioProvider, AudioProviderError, get_audio_provider
 from providers.base import (
     CallResult,
     ProviderCapabilities,
+    ProviderCapabilityError,
     TranscriptCallback,
     STATUS_COMPLETED,
     STATUS_ERROR,
@@ -51,6 +56,10 @@ class GatewayConfig:
     dtmf_initial_delay: float = 8.0
     # Wait this long between compound-path keys ("1w3").
     dtmf_key_gap: float = 2.0
+    # FreeSWITCH writes one WAV per call into this directory.
+    recording_dir: str = "/tmp/ivr-discovery-recordings"
+    # Wait briefly for FreeSWITCH to finish flushing the WAV after hangup.
+    recording_finalize_timeout: float = 5.0
 
     @classmethod
     def from_env(cls, env: dict | None = None) -> "GatewayConfig":
@@ -63,6 +72,10 @@ class GatewayConfig:
             domain=source.get("FREESWITCH_DOMAIN", source.get("FREESWITCH_ESL_HOST", "127.0.0.1")),
             gateway_extension=source.get("SIP_GATEWAY_EXTENSION", "gateway1"),
             caller_extension=source.get("SIP_SOFTPHONE_EXTENSION", "softphone"),
+            recording_dir=source.get("CALL_RECORDING_DIR", "/tmp/ivr-discovery-recordings"),
+            recording_finalize_timeout=float(
+                source.get("CALL_RECORDING_FINALIZE_TIMEOUT", "5")
+            ),
         )
 
 
@@ -70,13 +83,28 @@ class AndroidSimGatewayProvider:
     name = "android_sim"
     capabilities = ProviderCapabilities(transcript=False, speech=False, dtmf=True)
 
-    def __init__(self, config: GatewayConfig | None = None):
+    def __init__(
+        self,
+        config: GatewayConfig | None = None,
+        audio_provider: AudioProvider | None = None,
+    ):
         self.config = config or GatewayConfig.from_env()
+        self.audio_provider = audio_provider or get_audio_provider()
+        audio_configured = bool(
+            self.audio_provider
+            and getattr(self.audio_provider, "is_configured", False)
+        )
+        self.capabilities = ProviderCapabilities(
+            transcript=audio_configured,
+            speech=audio_configured,
+            dtmf=True,
+        )
         self._esl_config = EslConfig(
             host=self.config.esl_host,
             port=self.config.esl_port,
             password=self.config.esl_password,
         )
+        self._transcripts: dict[str, str] = {}
 
     # -- provider interface ---------------------------------------------------
 
@@ -89,10 +117,11 @@ class AndroidSimGatewayProvider:
         voice_option: str | None = None,
         max_duration: int = 60,
     ) -> str:
-        if task is not None or voice_option:
-            raise NotImplementedError(
-                "Android SIM gateway has no on-call speech agent; ASR/TTS navigation "
-                "is a separate stage and is not wired in yet."
+        self._require_audio_capability()
+        if task is not None:
+            raise ProviderCapabilityError(
+                "Android SIM gateway does not run a general on-call speech agent; "
+                "use dtmf_sequence or voice_option"
             )
 
         call_id = str(uuid_lib.uuid4())
@@ -100,12 +129,29 @@ class AndroidSimGatewayProvider:
         if not dest:
             raise ValueError("phone_number is required")
 
+        recording_path = self._recording_path(call_id)
+        self._validate_recording_path(recording_path)
+        await asyncio.to_thread(recording_path.parent.mkdir, parents=True, exist_ok=True)
+
+        voice_prompt_path: Path | None = None
+        if voice_option:
+            if not self.capabilities.speech:
+                raise ProviderCapabilityError(
+                    "Android SIM gateway cannot speak voice options because "
+                    "Tencent TTS is not configured"
+                )
+            voice_prompt_path = recording_path.with_name(f"{call_id}-prompt.wav")
+            await self.audio_provider.synthesize(voice_option, voice_prompt_path)
+            self._validate_recording_path(voice_prompt_path)
+
         originate = (
             "originate "
             "{"
             f"origination_uuid={call_id},"
             f"origination_caller_id_number={self.config.caller_extension},"
             "ignore_early_media=true,"
+            "RECORD_STEREO=true,"
+            f"execute_on_answer=record_session::{recording_path},"
             f"sip_h_X-GSM-Destination={dest}"
             f"}}user/{self.config.gateway_extension}@{self.config.domain} "
             "&park()"
@@ -122,6 +168,10 @@ class AndroidSimGatewayProvider:
 
         if dtmf_sequence:
             asyncio.create_task(self._send_dtmf_after_answer(call_id, dtmf_sequence))
+        if voice_prompt_path is not None:
+            asyncio.create_task(
+                self._play_voice_after_answer(call_id, voice_prompt_path)
+            )
 
         logger.info("Originated GSM call %s -> %s", call_id, dest)
         return call_id
@@ -131,12 +181,20 @@ class AndroidSimGatewayProvider:
         call_id: str,
         on_transcript: TranscriptCallback | None = None,
     ) -> CallResult:
-        # This provider never produces a transcript. Callers that need one must
-        # run ASR on the captured audio separately.
         result = await self.get_call(call_id)
         while result.status == STATUS_IN_PROGRESS:
             await asyncio.sleep(2.0)
             result = await self.get_call(call_id)
+
+        # The channel disappears slightly before FreeSWITCH finishes flushing
+        # the WAV, so explicitly finalize once the call is terminal.
+        if result.status == STATUS_COMPLETED and not result.transcript:
+            result = await self._finalize_recording(call_id)
+
+        if on_transcript and result.transcript:
+            callback_result = on_transcript(result.transcript)
+            if inspect.isawaitable(callback_result):
+                await callback_result
         return result
 
     async def get_call(self, call_id: str) -> CallResult:
@@ -147,9 +205,28 @@ class AndroidSimGatewayProvider:
             return CallResult(call_id=call_id, status=STATUS_ERROR, capabilities=self.capabilities)
 
         active = self._channel_active(channels, call_id)
+        if active:
+            return CallResult(
+                call_id=call_id,
+                status=STATUS_IN_PROGRESS,
+                capabilities=self.capabilities,
+            )
+
+        if call_id in self._transcripts:
+            return CallResult(
+                call_id=call_id,
+                status=STATUS_COMPLETED,
+                transcript=self._transcripts[call_id],
+                capabilities=self.capabilities,
+            )
+
+        recording_path = self._recording_path(call_id)
+        if recording_path.is_file():
+            return await self._transcribe_recording(call_id, recording_path)
+
         return CallResult(
             call_id=call_id,
-            status=STATUS_IN_PROGRESS if active else STATUS_COMPLETED,
+            status=STATUS_COMPLETED,
             transcript="",
             cost=0.0,
             capabilities=self.capabilities,
@@ -179,6 +256,75 @@ class AndroidSimGatewayProvider:
             except EslError as exc:
                 logger.warning("Failed to send DTMF %s on %s: %s", key, call_id, exc)
                 return
+
+    async def _play_voice_after_answer(self, call_id: str, path: Path) -> None:
+        """Play a synthesized option phrase on the caller leg."""
+        await asyncio.sleep(self.config.dtmf_initial_delay)
+        try:
+            await asyncio.to_thread(
+                self._run_api,
+                f"uuid_broadcast {call_id} {path} aleg",
+            )
+            logger.info("Played voice option on call %s from %s", call_id, path)
+        except EslError as exc:
+            logger.warning("Failed to play voice option on %s: %s", call_id, exc)
+
+    async def _finalize_recording(self, call_id: str) -> CallResult:
+        path = self._recording_path(call_id)
+        deadline = asyncio.get_running_loop().time() + self.config.recording_finalize_timeout
+        while not path.is_file() and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.25)
+
+        if not path.is_file():
+            logger.warning("No recording file was produced for call %s", call_id)
+            return CallResult(
+                call_id=call_id,
+                status=STATUS_COMPLETED,
+                capabilities=self.capabilities,
+            )
+        return await self._transcribe_recording(call_id, path)
+
+    async def _transcribe_recording(self, call_id: str, path: Path) -> CallResult:
+        if not self.capabilities.transcript:
+            return CallResult(
+                call_id=call_id,
+                status=STATUS_COMPLETED,
+                capabilities=self.capabilities,
+            )
+        try:
+            transcript = await self.audio_provider.transcribe(path)
+        except AudioProviderError as exc:
+            logger.error("ASR failed for call %s: %s", call_id, exc)
+            return CallResult(
+                call_id=call_id,
+                status=STATUS_ERROR,
+                capabilities=self.capabilities,
+            )
+        self._transcripts[call_id] = transcript
+        return CallResult(
+            call_id=call_id,
+            status=STATUS_COMPLETED,
+            transcript=transcript,
+            capabilities=self.capabilities,
+        )
+
+    def _require_audio_capability(self) -> None:
+        if not self.capabilities.transcript or not self.audio_provider.is_configured:
+            raise ProviderCapabilityError(
+                "Android SIM gateway requires a configured Audio Provider "
+                "(Tencent: set TENCENTCLOUD_SECRET_ID and "
+                "TENCENTCLOUD_SECRET_KEY)"
+            )
+
+    def _recording_path(self, call_id: str) -> Path:
+        return Path(self.config.recording_dir) / f"{call_id}.wav"
+
+    @staticmethod
+    def _validate_recording_path(path: Path) -> None:
+        if any(char in str(path) for char in ",{}\n\r\t "):
+            raise ValueError(
+                f"Recording path contains characters unsafe for FreeSWITCH: {path}"
+            )
 
     def _run_api(self, command: str) -> str:
         with EslClient(self._esl_config) as client:

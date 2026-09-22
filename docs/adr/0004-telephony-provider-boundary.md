@@ -13,7 +13,8 @@
 
 - `backend/providers/base.py` 定义 `TelephonyProvider` 协议、`CallResult` 和 `ProviderCapabilities`。能力差异（是否有自有 ASR、是否支持语音、是否支持 DTMF）显式声明，而不是默认所有 Provider 等价。
 - `backend/providers/bland_provider.py` 把原有 `bland_client` 包装成 Provider，能力为 `transcript/speech/dtmf = true`。
-- `backend/providers/android_sim_provider.py` 通过 FreeSWITCH ESL 发起外呼，用 `X-GSM-Destination` 头传被叫号，并转发 DTMF。它声明 `transcript=False`——网关只承载音频，ASR/TTS 是尚未接入的独立阶段。
+- `backend/providers/android_sim_provider.py` 通过 FreeSWITCH ESL 发起外呼，用 `X-GSM-Destination` 头传被叫号，逐步转发 DTMF，并通过 `execute_on_answer=record_session::...` 录制每通电话。它把 ASR/TTS 委托给独立 Audio Provider；腾讯云凭证可用时声明 `transcript/speech=True`，不可用时拒绝拨号。
 - `backend/providers/esl.py` 是最小 ESL 客户端，只实现 authenticate、`api`、`bgapi`，不引入重量级依赖。
 - `discovery.py` 和 `main.py` 不再直接 import `bland_client`；`get_provider()` 按 `TELEPHONY_PROVIDER` 选择，默认 `android_sim`。
-- 由于发现流程依赖转写，`explore_node` 遇到无 ASR 能力的 Provider 时直接标记失败并**不发起真实呼叫**，避免白白消耗真实电话；等 ASR 阶段接入后该路径才会真正可用。
+- 由于发现流程依赖转写，`explore_node` 遇到无 ASR 能力的 Provider 时仍直接标记失败并**不发起真实呼叫**，避免在音频凭证未配置时白白消耗真实电话。
+- 腾讯云音频边界、录音格式和接口事实见 `docs/adr/0007` 与 `docs/research/tencent-cloud-8k-asr-tts.md`。
