@@ -115,6 +115,16 @@ gateway/freeswitch/scripts/run-pjsua-testclient.sh /tmp/apple-root-45s.wav
 使用 `testclient` 账号自动接听，并通过 `--play-file`/`--auto-play` 将固定 WAV
 发送给 FreeSWITCH。该端点只用于局域网实时 ASR/DTMF 回归，不用于运营商外呼。
 
+真实号码的受控实时探针使用后端模块，每次只允许发送一个确定性 DTMF 键：
+
+```bash
+cd backend
+./venv/bin/python -m realtime.real_call_probe 4006668800 \
+  --target-key 1 --max-duration 30 --confirm-real-call
+```
+
+该命令会发起真实蜂窝外呼，必须得到号码测试授权并计入呼叫预算。
+
 ## 停止
 
 ```bash

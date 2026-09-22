@@ -10,6 +10,7 @@ import pytest
 
 from realtime.audio import decode_to_mono_pcm, resample_pcm16_mono
 from realtime.decision import RealtimeDecisionEngine, extract_dtmf_keys
+from realtime.real_call_probe import RealCallProbe
 from realtime.tencent_asr import build_realtime_uri
 
 
@@ -165,3 +166,45 @@ def test_build_realtime_uri_contains_signed_params():
     assert params["engine_model_type"] == ["8k_zh"]
     assert params["voice_id"] == ["voice-id"]
     assert "signature" in params
+
+
+@pytest.mark.asyncio
+async def test_real_call_probe_selects_only_matching_terminal_event():
+    probe = RealCallProbe(
+        provider=object(),
+        relay_base="ws://127.0.0.1:18031",
+        target_key="1",
+        encoding="s16le",
+        mix_type="mono",
+        gain=1.0,
+        silence_ms=800,
+        menu_completion_ms=8000,
+        no_speech_timeout_ms=30000,
+    )
+    events: asyncio.Queue[dict] = asyncio.Queue()
+    await events.put(
+        {
+            "channel_uuid": "other",
+            "event_type": "dtmf_ready",
+            "key": "9",
+        }
+    )
+    await events.put(
+        {
+            "channel_uuid": "channel",
+            "event_type": "partial",
+            "text": "如果您同意",
+        }
+    )
+    await events.put(
+        {
+            "channel_uuid": "channel",
+            "event_type": "dtmf_ready",
+            "key": "1",
+        }
+    )
+
+    terminal = await probe._next_terminal_event(events, "channel")
+
+    assert terminal["event_type"] == "dtmf_ready"
+    assert terminal["key"] == "1"
