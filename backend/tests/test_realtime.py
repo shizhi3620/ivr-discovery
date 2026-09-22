@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from array import array
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 
 from realtime.audio import decode_to_mono_pcm, resample_pcm16_mono
+from realtime.corrections import apply_asr_corrections, reset_asr_corrections
 from realtime.decision import RealtimeDecisionEngine, extract_dtmf_keys
 from realtime.real_call_probe import RealCallProbe
 from realtime.tencent_asr import build_realtime_uri
@@ -17,7 +19,64 @@ from realtime.tencent_asr import build_realtime_uri
 def test_extract_dtmf_keys_chinese_and_english():
     assert extract_dtmf_keys("如果您同意，请按1；For English, press 2") == {"1", "2"}
     assert extract_dtmf_keys("普通话请按一") == {"1"}
+    assert extract_dtmf_keys("For technical support in English, press two") == {"2"}
     assert extract_dtmf_keys("Press star to repeat") == {"*"}
+
+
+def test_environment_asr_corrections(monkeypatch):
+    monkeypatch.setenv(
+        "ASR_PHRASE_CORRECTIONS_JSON",
+        json.dumps(
+            {
+                "点Apple。": "欢迎致电Apple。",
+                "Export in English.": (
+                    "For technical support in English, press two."
+                ),
+            },
+            ensure_ascii=False,
+        ),
+    )
+    reset_asr_corrections()
+    assert apply_asr_corrections("点Apple。 Export in English.") == (
+        "欢迎致电Apple。 For technical support in English, press two."
+    )
+    reset_asr_corrections()
+
+
+@pytest.mark.asyncio
+async def test_decision_uses_asr_phrase_correction(monkeypatch):
+    monkeypatch.setenv(
+        "ASR_PHRASE_CORRECTIONS_JSON",
+        json.dumps(
+            {
+                "Export in English.": (
+                    "For technical support in English, press two."
+                )
+            }
+        ),
+    )
+    reset_asr_corrections()
+    events: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        events.append(event)
+
+    engine = RealtimeDecisionEngine(
+        channel_uuid="channel",
+        exploration_call_id="call",
+        target_key="2",
+        on_event=on_event,
+        silence_ms=20,
+        no_speech_timeout_ms=1000,
+    )
+    await engine.start()
+    await engine.feed("Export in English.", is_final=True)
+    await asyncio.sleep(0.05)
+    await engine.close()
+
+    assert events[-1]["event_type"] == "dtmf_ready"
+    assert events[-1]["key"] == "2"
+    reset_asr_corrections()
 
 
 @pytest.mark.asyncio

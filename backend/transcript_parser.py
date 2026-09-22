@@ -6,6 +6,7 @@ import logging
 from dotenv import load_dotenv
 
 from ai import AIProvider, get_ai_provider
+from realtime.corrections import apply_asr_corrections
 
 load_dotenv()
 
@@ -40,7 +41,6 @@ Return ONLY valid JSON:
   ]
 }
 
-Transcript:
 """
 
 # Navigation/utility labels to filter out
@@ -109,6 +109,7 @@ async def parse_transcript(
     transcript_text: str,
     *,
     provider: AIProvider | None = None,
+    dtmf_path: str = "",
 ) -> dict:
     """Parse an IVR transcript and extract menu structure using the AI Provider.
 
@@ -116,12 +117,22 @@ async def parse_transcript(
     """
     if not transcript_text or len(transcript_text.strip()) < 5:
         return {"prompt_text": "", "options": []}
+    transcript_text = apply_asr_corrections(transcript_text)
 
     try:
         provider = provider or get_ai_provider()
+        path_context = (
+            "The mandatory navigation prefix already replayed in this call was: "
+            f"{dtmf_path}.\n"
+            "Ignore earlier prefix menus and parse only the final node reached "
+            "after the full prefix. For example, after 1w1 ignore the privacy "
+            "menu and the language menu.\n\n"
+            if dtmf_path
+            else "This is the root call; parse the first menu reached.\n\n"
+        )
         text = (await provider.complete(
-            PARSE_PROMPT + transcript_text,
-            max_tokens=1024,
+            PARSE_PROMPT + path_context + "Transcript:\n" + transcript_text,
+            max_tokens=4096,
             json_mode=provider.capabilities.json_mode,
         )).strip()
 
@@ -148,7 +159,15 @@ async def parse_transcript(
 
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse AI response as JSON: {e}")
-        return {"prompt_text": transcript_text[:200], "options": []}
+        return {
+            "prompt_text": transcript_text[:200],
+            "options": [],
+            "parse_error": f"invalid JSON: {e}",
+        }
     except Exception as e:
         logger.exception(f"Error parsing transcript: {e}")
-        return {"prompt_text": "", "options": []}
+        return {
+            "prompt_text": "",
+            "options": [],
+            "parse_error": str(e) or type(e).__name__,
+        }

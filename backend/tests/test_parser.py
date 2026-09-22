@@ -176,6 +176,23 @@ class TestParseTranscript:
         )
         assert result["options"] == [{"dtmf_key": "1", "label": "Agree"}]
 
+    async def test_prompt_includes_mandatory_navigation_path(self):
+        provider = make_ai_provider(
+            {
+                "prompt_text": "Final node",
+                "human_transfer": False,
+                "options": [],
+            }
+        )
+        await parse_transcript(
+            "欢迎致电Apple。普通话按1。For technical support in English, press two.",
+            provider=provider,
+            dtmf_path="1w1",
+        )
+        prompt = provider.complete.call_args.args[0]
+        assert "mandatory navigation prefix" in prompt
+        assert "1w1" in prompt
+
     async def test_handles_invalid_json(self):
         provider = make_ai_provider("this is not json")
         result = await parse_transcript(
@@ -184,6 +201,7 @@ class TestParseTranscript:
         )
         assert result["options"] == []
         assert len(result["prompt_text"]) > 0  # Falls back to transcript[:200]
+        assert "parse_error" in result
 
     async def test_handles_api_error(self):
         provider = AsyncMock()
@@ -191,4 +209,6 @@ class TestParseTranscript:
         provider.complete.side_effect = Exception("API down")
 
         result = await parse_transcript("user: Press 1 for billing", provider=provider)
-        assert result == {"prompt_text": "", "options": []}
+        assert result["prompt_text"] == ""
+        assert result["options"] == []
+        assert result["parse_error"] == "API down"

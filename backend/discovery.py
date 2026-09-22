@@ -25,7 +25,7 @@ MAX_CONCURRENT_CALLS = max(1, int(os.getenv("MAX_CONCURRENT_CALLS", "1")))
 MAX_DEPTH = 3
 MIN_TRANSCRIPT_LENGTH = 20  # Retry if transcript is shorter than this
 ROOT_CALL_MAX_DURATION = max(1, int(os.getenv("ROOT_CALL_MAX_DURATION", "60")))
-BRANCH_CALL_MAX_DURATION = max(1, int(os.getenv("BRANCH_CALL_MAX_DURATION", "45")))
+BRANCH_CALL_MAX_DURATION = max(1, int(os.getenv("BRANCH_CALL_MAX_DURATION", "60")))
 CALL_COOLDOWN_SECONDS = max(0.0, float(os.getenv("CALL_COOLDOWN_SECONDS", "0")))
 
 
@@ -279,7 +279,28 @@ async def explore_node(
         })
 
         # Parse transcript with the configured AI Provider
-        parsed = await transcript_parser.parse_transcript(concatenated)
+        parsed = await transcript_parser.parse_transcript(
+            concatenated,
+            dtmf_path=node.dtmf_path,
+        )
+        if parsed.get("parse_error"):
+            message = f"Transcript parsing failed: {parsed['parse_error']}"
+            await db.update_node(
+                node.id,
+                status=NodeStatus.FAILED,
+                prompt_text=message,
+                transcript=concatenated,
+                cost=cost,
+                realtime_verified=bool(node.dtmf_path),
+            )
+            await send_json(ws, {
+                "type": "node_updated",
+                "node_id": node.id,
+                "status": "failed",
+                "prompt_text": message,
+                "cost": cost,
+            })
+            return []
         prompt_text = parsed.get("prompt_text", concatenated[:200])
         options = parsed.get("options", [])
 
@@ -633,6 +654,10 @@ async def run_discovery(
         final_status = SessionStatus.COMPLETED
     except asyncio.CancelledError:
         logger.info("Discovery cancelled")
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+        await _stop_inflight_nodes(session, provider)
         final_status = SessionStatus.FAILED
     except Exception:
         logger.exception("Discovery failed unexpectedly")
@@ -651,6 +676,7 @@ async def run_discovery(
     nodes = await db.get_nodes_by_session(session.id)
     total_cost = sum(n.cost for n in nodes)
     await db.update_session(session.id, total_cost=total_cost)
+    await finalize_window_for_session(session)
     await send_json(ws, {
         "type": "session_status",
         "session": await session_status_payload(
@@ -660,8 +686,27 @@ async def run_discovery(
             total_cost=total_cost,
         ),
     })
-    await finalize_window_for_session(session)
     logger.info(f"Discovery {final_status.value}: {len(nodes)} nodes, ${total_cost:.4f} total cost, {len(seen_menus)} unique menus")
+
+
+async def _stop_inflight_nodes(
+    session: Session,
+    provider: TelephonyProvider,
+) -> None:
+    nodes = await db.get_nodes_by_session(session.id)
+    for node in nodes:
+        if node.status not in (NodeStatus.CALLING, NodeStatus.PARSING):
+            continue
+        if node.call_id:
+            try:
+                await provider.stop_call(node.call_id)
+            except Exception:
+                logger.warning("Failed to stop cancelled call %s", node.call_id)
+        await db.update_node(
+            node.id,
+            status=NodeStatus.FAILED,
+            prompt_text="Run cancelled; call stopped",
+        )
 
 
 async def rediscover_subtree(

@@ -53,7 +53,7 @@ class TestDeepSeekProvider:
     def test_configuration_defaults(self):
         with patch.dict("os.environ", {}, clear=True):
             provider = DeepSeekProvider(api_key="k")
-        assert provider.model == "deepseek-flash"
+        assert provider.model == "deepseek-chat"
         assert provider.endpoint == "https://api.deepseek.com/chat/completions"
 
     @pytest.mark.asyncio
@@ -73,7 +73,7 @@ class TestDeepSeekProvider:
         assert text == "hello"
         _, kwargs = client.post.call_args
         assert kwargs["headers"] == {"Authorization": "Bearer secret"}
-        assert kwargs["json"]["model"] == "deepseek-flash"
+        assert kwargs["json"]["model"] == "deepseek-chat"
         assert kwargs["json"]["response_format"] == {"type": "json_object"}
         assert kwargs["json"]["messages"] == [{"role": "user", "content": "prompt"}]
         client.aclose.assert_not_awaited()
@@ -105,6 +105,43 @@ class TestDeepSeekProvider:
 
         with pytest.raises(RuntimeError, match="message content"):
             await provider.complete("prompt")
+
+    @pytest.mark.asyncio
+    async def test_retries_reasoning_only_response_with_more_tokens(self):
+        request = httpx.Request("POST", "https://api.deepseek.com/chat/completions")
+        reasoning_only = httpx.Response(
+            200,
+            request=request,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {
+                            "content": "",
+                            "reasoning_content": "reasoning used the budget",
+                        },
+                    }
+                ]
+            },
+        )
+        completed = httpx.Response(
+            200,
+            request=request,
+            json={"choices": [{"message": {"content": '{"ok":true}'}}]},
+        )
+        client = AsyncMock()
+        client.post.side_effect = [reasoning_only, completed]
+        provider = DeepSeekProvider(api_key="secret", client=client)
+
+        text = await provider.complete(
+            "prompt",
+            max_tokens=1024,
+            json_mode=True,
+        )
+
+        assert text == '{"ok":true}'
+        assert client.post.await_count == 2
+        assert client.post.call_args.kwargs["json"]["max_tokens"] >= 4096
 
 
 class TestAnthropicProvider:

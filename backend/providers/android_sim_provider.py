@@ -287,6 +287,13 @@ class AndroidSimGatewayProvider:
         return result
 
     async def get_call(self, call_id: str) -> CallResult:
+        result = await self._get_call(call_id)
+        realtime = self._realtime_results.get(call_id)
+        if realtime:
+            result.realtime_fault = str(realtime.get("fault") or "")
+        return result
+
+    async def _get_call(self, call_id: str) -> CallResult:
         try:
             channels = await asyncio.to_thread(self._run_api, "show channels as json")
         except EslError as exc:

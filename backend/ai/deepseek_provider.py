@@ -1,8 +1,8 @@
 """DeepSeek implementation of the AI Provider boundary.
 
 DeepSeek exposes an OpenAI-compatible `/chat/completions` endpoint. The default
-model is `deepseek-flash`; callers can override it with `DEEPSEEK_MODEL` because
-DeepSeek model names have changed over time.
+model is `deepseek-chat` for stable JSON output; callers can override it with
+`DEEPSEEK_MODEL`.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import httpx
 from ai.base import AICapabilities
 
 DEFAULT_BASE_URL = "https://api.deepseek.com"
-DEFAULT_MODEL = "deepseek-flash"
+DEFAULT_MODEL = "deepseek-chat"
 DEFAULT_TIMEOUT = 60.0
 
 
@@ -67,14 +67,22 @@ class DeepSeekProvider:
         owns_client = self._client is None
         client = self._client or httpx.AsyncClient(timeout=self.timeout)
         try:
-            response = await client.post(
-                self.endpoint,
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json=payload,
-            )
-            response.raise_for_status()
-            data = response.json()
-            return _extract_message_content(data)
+            for attempt in range(2):
+                response = await client.post(
+                    self.endpoint,
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json=payload,
+                )
+                response.raise_for_status()
+                data = response.json()
+                try:
+                    return _extract_message_content(data)
+                except RuntimeError:
+                    if attempt == 0 and _reasoning_used_all_tokens(data):
+                        payload["max_tokens"] = max(4096, int(payload["max_tokens"]) * 2)
+                        continue
+                    raise
+            raise RuntimeError("DeepSeek completion retry exhausted")
         finally:
             if owns_client:
                 await client.aclose()
@@ -90,6 +98,20 @@ def _extract_message_content(data: Any) -> str:
     if not isinstance(content, str) or not content.strip():
         raise RuntimeError("DeepSeek returned an empty message")
     return content.strip()
+
+
+def _reasoning_used_all_tokens(data: Any) -> bool:
+    """Detect a reasoning-only response that should be retried with more tokens."""
+    try:
+        choice = data["choices"][0]
+        message = choice["message"]
+    except (KeyError, IndexError, TypeError):
+        return False
+    content = message.get("content")
+    reasoning = message.get("reasoning_content")
+    return (
+        not isinstance(content, str) or not content.strip()
+    ) and isinstance(reasoning, str) and bool(reasoning.strip())
 
 
 __all__ = ["DeepSeekProvider"]

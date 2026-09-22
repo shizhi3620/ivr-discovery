@@ -7,6 +7,8 @@ import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from realtime.corrections import apply_asr_corrections
+
 EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 HUMAN_BOUNDARY_PATTERNS = (
@@ -43,6 +45,19 @@ _KEY_WORDS = {
     "pound": "#",
 }
 
+_ENGLISH_DIGIT_WORDS = {
+    "zero": "0",
+    "one": "1",
+    "two": "2",
+    "three": "3",
+    "four": "4",
+    "five": "5",
+    "six": "6",
+    "seven": "7",
+    "eight": "8",
+    "nine": "9",
+}
+
 _DTMF_PATTERNS = (
     re.compile(r"(?:按|请按)\s*([0-9*#])"),
     re.compile(r"press\s+([0-9*#])", re.IGNORECASE),
@@ -61,6 +76,9 @@ def extract_dtmf_keys(text: str) -> set[str]:
             keys.add(key)
 
     lowered = text.lower()
+    for word, key in _ENGLISH_DIGIT_WORDS.items():
+        if re.search(rf"(?:press|key)\s+{word}\b", lowered):
+            keys.add(key)
     for word, key in _KEY_WORDS.items():
         if re.search(rf"(?:press|key)\s+{word}", lowered):
             keys.add(key)
@@ -105,7 +123,7 @@ class RealtimeDecisionEngine:
             self._no_speech_task = asyncio.create_task(self._no_speech_timeout())
 
     async def feed(self, text: str, *, is_final: bool) -> None:
-        text = text.strip()
+        text = apply_asr_corrections(text.strip())
         if not text or self._stopped:
             return
 

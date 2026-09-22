@@ -211,12 +211,16 @@ async def recover_stuck_nodes():
     import aiosqlite
     async with aiosqlite.connect(db.DB_PATH) as conn:
         cursor = await conn.execute(
-            "SELECT id, call_id, session_id FROM nodes WHERE status IN ('calling', 'parsing') AND call_id IS NOT NULL"
+            """
+            SELECT id, call_id, session_id, dtmf_path
+            FROM nodes
+            WHERE status IN ('calling', 'parsing') AND call_id IS NOT NULL
+            """
         )
         stuck = await cursor.fetchall()
 
     provider = get_provider()
-    for node_id, call_id, session_id in stuck:
+    for node_id, call_id, session_id, dtmf_path in stuck:
         try:
             call_result = await provider.get_call(call_id)
             call_status = call_result.status
@@ -225,10 +229,28 @@ async def recover_stuck_nodes():
 
             if call_status in ("completed", "failed", "busy", "no-answer", "canceled", "error"):
                 if transcript and len(transcript.strip()) > 20:
-                    parsed = await transcript_parser.parse_transcript(transcript)
+                    parsed = await transcript_parser.parse_transcript(
+                        transcript,
+                        dtmf_path=dtmf_path,
+                    )
                     prompt = parsed.get("prompt_text", transcript[:200])
                 else:
                     prompt = f"Call {call_status}" if call_status != "completed" else "No transcript"
+
+                if call_result.realtime_fault:
+                    await db.update_node(
+                        node_id,
+                        status="failed",
+                        prompt_text=(
+                            "Realtime navigation failed: "
+                            + call_result.realtime_fault
+                        ),
+                        transcript=transcript,
+                        cost=cost,
+                        realtime_verified=False,
+                    )
+                    recovered += 1
+                    continue
 
                 await db.update_node(
                     node_id,
@@ -236,6 +258,9 @@ async def recover_stuck_nodes():
                     prompt_text=prompt,
                     transcript=transcript,
                     cost=cost,
+                    realtime_verified=bool(
+                        dtmf_path and call_status == "completed"
+                    ),
                 )
                 recovered += 1
         except Exception as e:
