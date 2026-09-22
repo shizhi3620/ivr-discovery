@@ -6,3 +6,7 @@
 
 - 第一阶段的 DTMF 验收依赖本地补丁，不能依赖上游当前版本。
 - 第一阶段只验证 RFC 4733 电话事件；SIP INFO 只有在前者失败时才作为回退方案验证。
+
+## 验证记录（2026-09-22）
+
+在一次人工监督的 `10010` 呼叫中实测确认整条 DTMF 链路：FreeSWITCH `uuid_send_dtmf` 分别发送 `1`、`2`；手机日志显示 `GatewayCall: DTMF: 1/2` → `GatewayInCall: Playing DTMF on GSM call` → Telecom `START_DTMF` → ImsService `DTMF_START [SUB0]`，随后 `STOP_DTMF`/`DTMF_STOP`。说明 RFC 4733 DTMF 已被网关接收并注入联通 VoLTE 蜂窝通话。
