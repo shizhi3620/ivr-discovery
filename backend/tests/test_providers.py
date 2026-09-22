@@ -195,6 +195,7 @@ class TestAndroidSimCapabilities:
         )
         assert provider.capabilities.transcript is False
         assert provider.capabilities.dtmf is True
+        assert provider.capabilities.realtime_dtmf is True
 
     @pytest.mark.asyncio
     async def test_refuses_to_dial_without_audio_credentials(self):
@@ -318,6 +319,91 @@ class TestAndroidSimCapabilities:
         with patch.object(provider, "_run_api", return_value=payload):
             result = await provider.get_call("live-call")
         assert result.status == STATUS_IN_PROGRESS
+
+    @pytest.mark.asyncio
+    async def test_realtime_navigation_waits_for_dtmf_ready(self):
+        from providers.android_sim_provider import (
+            AndroidSimGatewayProvider,
+            GatewayConfig,
+        )
+
+        provider = AndroidSimGatewayProvider(
+            GatewayConfig(),
+            audio_provider=FakeAudioProvider(),
+        )
+        commands: list[str] = []
+        events = iter(
+            [
+                {"event_type": "dtmf_ready", "key": "1"},
+                {
+                    "event_type": "technical_unknown",
+                    "reason": "no ASR text before timeout",
+                },
+            ]
+        )
+
+        with patch.object(
+            provider,
+            "_start_realtime_stream",
+            new=AsyncMock(),
+        ), patch.object(
+            provider,
+            "_stop_realtime_stream",
+            new=AsyncMock(),
+        ), patch.object(
+            provider,
+            "_next_realtime_event",
+            new=AsyncMock(side_effect=lambda *args, **kwargs: next(events)),
+        ), patch.object(
+            provider,
+            "_run_api",
+            side_effect=lambda command: commands.append(command) or "+OK",
+        ), patch.object(
+            provider,
+            "stop_call",
+            new=AsyncMock(),
+        ):
+            await provider._navigate_realtime("call-1", "1")
+
+        assert any("uuid_send_dtmf call-1 1" in command for command in commands)
+        assert provider._realtime_results["call-1"]["fault"] == ""
+
+    @pytest.mark.asyncio
+    async def test_realtime_navigation_stops_on_human_boundary(self):
+        from providers.android_sim_provider import (
+            AndroidSimGatewayProvider,
+            GatewayConfig,
+        )
+
+        provider = AndroidSimGatewayProvider(
+            GatewayConfig(),
+            audio_provider=FakeAudioProvider(),
+        )
+        with patch.object(
+            provider,
+            "_start_realtime_stream",
+            new=AsyncMock(),
+        ), patch.object(
+            provider,
+            "_stop_realtime_stream",
+            new=AsyncMock(),
+        ), patch.object(
+            provider,
+            "_next_realtime_event",
+            new=AsyncMock(return_value={"event_type": "human_boundary"}),
+        ), patch.object(
+            provider,
+            "_run_api",
+            return_value="+OK",
+        ), patch.object(
+            provider,
+            "stop_call",
+            new=AsyncMock(),
+        ) as stop_call:
+            await provider._navigate_realtime("call-1", "1")
+
+        assert provider._realtime_results["call-1"]["fault"] == "human_boundary"
+        stop_call.assert_awaited()
 
 
 class TestEslBodyExtraction:

@@ -38,6 +38,12 @@ async def init_db():
         await _ensure_column(db, "sessions", "override_reason", "TEXT NOT NULL DEFAULT ''")
         await _ensure_column(db, "sessions", "started_at", "TEXT")
         await _ensure_column(db, "sessions", "ended_at", "TEXT")
+        await _ensure_column(
+            db,
+            "nodes",
+            "realtime_verified",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
         await db.commit()
 
 
@@ -523,8 +529,27 @@ async def get_session(session_id: str) -> Session | None:
 async def create_node(node: Node):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO nodes (id, session_id, parent_id, dtmf_path, voice_option, prompt_text, status, call_id, cost, transcript, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (node.id, node.session_id, node.parent_id, node.dtmf_path, node.voice_option, node.prompt_text, node.status.value, node.call_id, node.cost, node.transcript, node.created_at),
+            """
+            INSERT INTO nodes
+                (id, session_id, parent_id, dtmf_path, voice_option,
+                 prompt_text, status, call_id, cost, transcript,
+                 realtime_verified, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                node.id,
+                node.session_id,
+                node.parent_id,
+                node.dtmf_path,
+                node.voice_option,
+                node.prompt_text,
+                node.status.value,
+                node.call_id,
+                node.cost,
+                node.transcript,
+                int(node.realtime_verified),
+                node.created_at,
+            ),
         )
         await db.commit()
 
@@ -536,6 +561,8 @@ async def update_node(node_id: str, **kwargs):
     for k, v in kwargs.items():
         if hasattr(v, "value"):
             processed[k] = v.value
+        elif isinstance(v, bool):
+            processed[k] = int(v)
         else:
             processed[k] = v
     sets = ", ".join(f"{k} = ?" for k in processed)
@@ -713,7 +740,12 @@ async def delete_subtree(node_id: str) -> tuple[list[str], list[str]]:
 
         # Reset the target node to allow re-exploration
         await db.execute(
-            "UPDATE nodes SET status = 'pending', prompt_text = '', transcript = NULL WHERE id = ?",
+            """
+            UPDATE nodes
+            SET status = 'pending', prompt_text = '', transcript = NULL,
+                realtime_verified = 0
+            WHERE id = ?
+            """,
             (node_id,),
         )
 

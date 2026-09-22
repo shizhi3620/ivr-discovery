@@ -110,6 +110,7 @@ class Node(BaseModel):
     call_id: Optional[str] = None
     cost: float = 0.0
     transcript: Optional[str] = None  # normalized transcript from the call provider
+    realtime_verified: bool = False
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -198,6 +199,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     call_id TEXT,
     cost REAL NOT NULL DEFAULT 0.0,
     transcript TEXT,
+    realtime_verified INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
 

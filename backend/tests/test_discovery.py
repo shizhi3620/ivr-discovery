@@ -168,6 +168,7 @@ async def test_run_discovery_resumes_existing_pending_node():
         transcript=True,
         speech=True,
         dtmf=True,
+        realtime_dtmf=True,
     )
     provider.place_call = AsyncMock(return_value="call-resume")
     provider.wait_for_call = AsyncMock(
@@ -357,6 +358,41 @@ class TestExploreNodeProviderBoundary:
         stored = await db.get_node(node.id)
         assert stored.status == NodeStatus.FAILED
         assert "budget exhausted" in stored.prompt_text
+
+    @pytest.mark.asyncio
+    async def test_branch_call_requires_realtime_dtmf_capability(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from discovery import explore_node
+        from providers.base import ProviderCapabilities
+
+        session = Session(phone_number="4006668800")
+        await db.create_session(session)
+        node = Node(
+            session_id=session.id,
+            parent_id="parent",
+            dtmf_path="1",
+            status=NodeStatus.PENDING,
+        )
+        await db.create_node(node)
+        provider = MagicMock()
+        provider.name = "fake"
+        provider.capabilities = ProviderCapabilities(
+            transcript=True,
+            speech=True,
+            dtmf=True,
+            realtime_dtmf=False,
+        )
+        provider.place_call = AsyncMock()
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+
+        options = await explore_node(ws, session, node, provider)
+
+        assert options == []
+        provider.place_call.assert_not_awaited()
+        stored = await db.get_node(node.id)
+        assert stored.status == NodeStatus.FAILED
+        assert "Realtime DTMF" in stored.prompt_text
 
     @pytest.mark.asyncio
     async def test_successful_origination_records_counted_call(self):

@@ -49,6 +49,8 @@ class ProviderCapabilities:
     speech: bool = False
     # Provider can forward DTMF keypresses to the called party.
     dtmf: bool = False
+    # Provider can wait for realtime ASR menu readiness before sending DTMF.
+    realtime_dtmf: bool = False
 
 
 @dataclass
@@ -60,6 +62,7 @@ class CallResult:
     transcript: str = ""
     cost: float = 0.0
     capabilities: ProviderCapabilities = field(default_factory=ProviderCapabilities)
+    realtime_fault: str = ""
 
     def is_terminal(self) -> bool:
         return self.status in TERMINAL_STATUSES

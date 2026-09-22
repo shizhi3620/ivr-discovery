@@ -137,6 +137,24 @@ async def explore_node(
             })
             return []
 
+        if node.dtmf_path and not provider.capabilities.realtime_dtmf:
+            message = (
+                "Realtime DTMF navigation is required for branch calls; "
+                "the configured provider only supports timed DTMF"
+            )
+            await db.update_node(
+                node.id,
+                status=NodeStatus.FAILED,
+                prompt_text=message,
+            )
+            await send_json(ws, {
+                "type": "node_updated",
+                "node_id": node.id,
+                "status": "failed",
+                "prompt_text": message,
+            })
+            return []
+
         budget_error = await _budget_gate_error(session)
         if budget_error:
             await db.update_node(
@@ -196,6 +214,25 @@ async def explore_node(
             concatenated = call_result.transcript
             cost += call_result.cost
 
+            if call_result.realtime_fault:
+                message = f"Realtime navigation failed: {call_result.realtime_fault}"
+                await db.update_node(
+                    node.id,
+                    status=NodeStatus.FAILED,
+                    prompt_text=message,
+                    transcript=concatenated,
+                    cost=cost,
+                    realtime_verified=False,
+                )
+                await send_json(ws, {
+                    "type": "node_updated",
+                    "node_id": node.id,
+                    "status": "failed",
+                    "prompt_text": message,
+                    "cost": cost,
+                })
+                return []
+
             if CALL_COOLDOWN_SECONDS:
                 await asyncio.sleep(CALL_COOLDOWN_SECONDS)
 
@@ -232,6 +269,7 @@ async def explore_node(
             status=NodeStatus.PARSING,
             transcript=concatenated,
             cost=cost,
+            realtime_verified=bool(node.dtmf_path),
         )
         await send_json(ws, {
             "type": "node_updated",
@@ -324,6 +362,13 @@ async def finalize_window_for_session(session: Session) -> None:
     ]
     unresolved_faults = sum(
         1 for node in nodes if node.status == NodeStatus.FAILED
+    )
+    unresolved_faults += sum(
+        1
+        for node in nodes
+        if node.parent_id
+        and node.status == NodeStatus.COMPLETED
+        and not node.realtime_verified
     )
     all_branches_terminal = bool(nodes) and all(
         node.status in (NodeStatus.COMPLETED, NodeStatus.FAILED)
