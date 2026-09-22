@@ -72,6 +72,14 @@ function StatusBar({ session }: { session: SessionInfo | null }) {
         </span>
       )}
 
+      {session.budget && (
+        <span className="text-gray-500 tabular-nums">
+          Budget {session.budget.window_used}/{session.budget.window_limit} window
+          {' · '}
+          {session.budget.target_used}/{session.budget.target_limit} total
+        </span>
+      )}
+
       {session.total_cost > 0 && (
         <span className="text-gray-600 tabular-nums">${session.total_cost.toFixed(4)}</span>
       )}
