@@ -40,3 +40,24 @@ Android 网关在蜂窝通话接通后才完成以下步骤：
 - 使用常驻 modem/ALSA 下行采集，而不是通话状态下临时打开。
 - 若无法消除启动延迟，在媒体就绪前缓存下行音频，并在建立桥后补发。
 - 对检测到突然起音的录音自动标记 `audio_start_truncated=true`。
+
+## 已实施验证
+
+本地 Android 网关工作树已实现拨号前预热：
+
+1. SIP 应答后先调用音频准备流程。
+2. 完成 mixer 配置并打开 ALSA capture/playback。
+3. 之后才调用 `TelecomManager.placeCall()`。
+4. OFFHOOK 时复用已打开的 PCM。
+
+使用无效应答号码做本地 SIP 测试，未拨打 GSM：
+
+```text
+GsmAudioPort: Preparing native audio before GSM dial...
+AudioBridge: Audio bridge started
+GsmAudioPort: Native audio prepared in 4567 ms
+CallMgr: Invalid phone number: invalid
+```
+
+预热在拨号前完成，测试后无残留 SIP 频道。该结果证明启动顺序已经修正；仍需
+一次真实电话确认首个“欢”能被录音捕获。
