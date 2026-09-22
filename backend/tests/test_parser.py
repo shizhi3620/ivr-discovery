@@ -161,6 +161,21 @@ class TestParseTranscript:
         result = await parse_transcript("user: Press 1 for help", provider=provider)
         assert len(result["options"]) == 1
 
+    async def test_extracts_json_before_trailing_text(self):
+        content = {
+            "prompt_text": "Welcome",
+            "human_transfer": False,
+            "options": [{"dtmf_key": "1", "label": "Agree"}],
+        }
+        provider = make_ai_provider(
+            json.dumps(content) + "\nAdditional explanation that is not JSON"
+        )
+        result = await parse_transcript(
+            "user: Press 1 to agree",
+            provider=provider,
+        )
+        assert result["options"] == [{"dtmf_key": "1", "label": "Agree"}]
+
     async def test_handles_invalid_json(self):
         provider = make_ai_provider("this is not json")
         result = await parse_transcript(

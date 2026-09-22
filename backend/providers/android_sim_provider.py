@@ -79,6 +79,10 @@ class GatewayConfig:
             domain=source.get("FREESWITCH_DOMAIN", source.get("FREESWITCH_ESL_HOST", "127.0.0.1")),
             gateway_extension=source.get("SIP_GATEWAY_EXTENSION", "gateway1"),
             caller_extension=source.get("SIP_SOFTPHONE_EXTENSION", "softphone"),
+            dtmf_initial_delay=float(
+                source.get("CALL_DTMF_INITIAL_DELAY", "8")
+            ),
+            dtmf_key_gap=float(source.get("CALL_DTMF_KEY_GAP", "2")),
             recording_dir=source.get("CALL_RECORDING_DIR", "/tmp/ivr-discovery-recordings"),
             channel_lookup_timeout=float(
                 source.get("CALL_CHANNEL_LOOKUP_TIMEOUT", "10")

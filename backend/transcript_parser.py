@@ -79,6 +79,28 @@ def _deduplicate_options(options: list[dict]) -> list[dict]:
     return deduped
 
 
+def _extract_json_object(text: str) -> dict:
+    """Parse a JSON object, tolerating markdown fences or trailing prose."""
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("```")[1]
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:]
+        cleaned = cleaned.strip()
+
+    try:
+        result = json.loads(cleaned)
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        if start < 0:
+            raise
+        result, _ = json.JSONDecoder().raw_decode(cleaned[start:])
+
+    if not isinstance(result, dict):
+        raise ValueError(f"Expected JSON object, got {type(result).__name__}")
+    return result
+
+
 async def parse_transcript(
     transcript_text: str,
     *,
@@ -99,18 +121,7 @@ async def parse_transcript(
             json_mode=provider.capabilities.json_mode,
         )).strip()
 
-        # Extract JSON from response (handle markdown code blocks)
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-            text = text.strip()
-
-        result = json.loads(text)
-
-        if not isinstance(result, dict):
-            logger.warning(f"Expected dict, got {type(result)}: {text}")
-            return {"prompt_text": "", "options": []}
+        result = _extract_json_object(text)
 
         prompt_text = str(result.get("prompt_text", ""))
         options = result.get("options", [])
