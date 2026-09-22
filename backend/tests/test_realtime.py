@@ -29,16 +29,22 @@ def test_environment_asr_corrections(monkeypatch):
         json.dumps(
             {
                 "点Apple": "欢迎致电Apple",
-                "Export in English": (
-                    "For technical support in English, press two."
-                ),
+                    "Export in English": (
+                        "For technical support in English, press two"
+                    ),
+                    "Support in English": (
+                        "For technical support in English, press two"
+                    ),
             },
             ensure_ascii=False,
         ),
     )
     reset_asr_corrections()
     assert apply_asr_corrections("点Apple。 export in english") == (
-        "欢迎致电Apple。 For technical support in English, press two."
+        "欢迎致电Apple。 For technical support in English, press two"
+    )
+    assert apply_asr_corrections("Support in English.") == (
+        "For technical support in English, press two."
     )
     reset_asr_corrections()
 

@@ -32,13 +32,19 @@ def _corrections() -> tuple[tuple[str, str], ...]:
 
 def apply_asr_corrections(text: str) -> str:
     corrected = text
-    for source, target in _corrections():
-        corrected = re.sub(
+    placeholders: list[tuple[str, str]] = []
+    for index, (source, target) in enumerate(_corrections()):
+        placeholder = f"\ue000{index}\ue001"
+        corrected, count = re.subn(
             re.escape(source),
-            target,
+            placeholder,
             corrected,
             flags=re.IGNORECASE,
         )
+        if count:
+            placeholders.append((placeholder, target))
+    for placeholder, target in placeholders:
+        corrected = corrected.replace(placeholder, target)
     return corrected
 
 
