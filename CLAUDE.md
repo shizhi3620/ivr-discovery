@@ -86,6 +86,7 @@ backend/
   transcript_parser.py — AI Provider based transcript analysis
   ai/                  — DeepSeek / Anthropic boundary
   audio/               — Tencent Cloud ASR/TTS boundary
+  realtime/            — local WebSocket audio relay and deterministic DTMF policy
   models.py            — SQLite models/schema
   tests/
     test_parser.py

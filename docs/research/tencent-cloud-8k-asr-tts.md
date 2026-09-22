@@ -64,3 +64,16 @@
 
 - 未使用真实腾讯云账号执行线上请求；当前验证覆盖请求结构、Base64/DataLen、轮询状态、TC3 Authorization 格式和 TTS 音频落盘。
 - 未指定默认 `VoiceType`。首次上线前应通过腾讯云控制台选择可用音色，并设置 `TENCENT_TTS_VOICE_TYPE`。
+
+## 实时语音识别 WebSocket
+
+- 官方 Python SDK 仓库：https://github.com/TencentCloud/tencentcloud-speech-sdk-python
+- 实时识别实现：https://github.com/TencentCloud/tencentcloud-speech-sdk-python/blob/master/asr/realtime_recognizer_v2.py
+- 官方示例：https://github.com/TencentCloud/tencentcloud-speech-sdk-python/blob/master/examples/asr/realtimev2example.py
+
+本地验证结果：
+
+- 当前账号使用 `8k_zh` AR：连接成功，但同一段中文电话录音只识别出开头英文。
+- 同一录音升采样到 16k mono、使用 `16k_zh` 后，可以返回完整 partial/final，并识别“如果您同意，请按1”。
+- 当前账号不支持 SDK 的 `result_mod=1` 句子模式，返回错误 `4001 result_mod=1 not support for appid ... engine:8k_zh`。
+- 中继因此兼容旧版 `result.voice_text_str` / `slice_type` 结果格式；final 后等待 800 ms 静音才产生 DTMF 触发事件。

@@ -1,0 +1,118 @@
+"""Tests for realtime decision, audio conversion and Tencent URI signing."""
+
+from __future__ import annotations
+
+import asyncio
+from array import array
+from urllib.parse import parse_qs, urlparse
+
+import pytest
+
+from realtime.audio import decode_to_mono_pcm, resample_pcm16_mono
+from realtime.decision import RealtimeDecisionEngine, extract_dtmf_keys
+from realtime.tencent_asr import build_realtime_uri
+
+
+def test_extract_dtmf_keys_chinese_and_english():
+    assert extract_dtmf_keys("如果您同意，请按1；For English, press 2") == {"1", "2"}
+    assert extract_dtmf_keys("普通话请按一") == {"1"}
+    assert extract_dtmf_keys("Press star to repeat") == {"*"}
+
+
+@pytest.mark.asyncio
+async def test_decision_emits_dtmf_ready_after_silence():
+    events: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        events.append(event)
+
+    engine = RealtimeDecisionEngine(
+        channel_uuid="channel",
+        exploration_call_id="call",
+        target_key="1",
+        on_event=on_event,
+        silence_ms=20,
+        no_speech_timeout_ms=1000,
+    )
+    await engine.start()
+    await engine.feed("如果您同意，请按1", is_final=True)
+    await asyncio.sleep(0.05)
+    await engine.close()
+
+    assert events[-1]["event_type"] == "dtmf_ready"
+    assert events[-1]["key"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_decision_stops_on_human_boundary():
+    events: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        events.append(event)
+
+    engine = RealtimeDecisionEngine(
+        channel_uuid="channel",
+        exploration_call_id="call",
+        target_key="1",
+        on_event=on_event,
+    )
+    await engine.start()
+    await engine.feed("您的电话正在转人工，请稍等", is_final=True)
+    await engine.close()
+
+    assert events == [
+        {
+            "channel_uuid": "channel",
+            "exploration_call_id": "call",
+            "event_type": "human_boundary",
+            "text": "您的电话正在转人工，请稍等",
+            "reason": "strong human-service keyword",
+        }
+    ]
+
+
+def test_decode_l16be_stereo_selects_remote_channel():
+    left = array("h", [1000, -1000])
+    right = array("h", [2000, -2000])
+    interleaved = array("h")
+    for left_sample, right_sample in zip(left, right):
+        interleaved.append(left_sample)
+        interleaved.append(right_sample)
+    interleaved.byteswap()
+
+    decoded = decode_to_mono_pcm(
+        interleaved.tobytes(),
+        encoding="l16be",
+        channels=2,
+        remote_channel=1,
+    )
+    assert array("h", decoded).tolist() == [2000, -2000]
+
+
+def test_resample_8k_to_16k_duplicates_samples():
+    source = array("h", [100, -200, 300]).tobytes()
+    resampled = resample_pcm16_mono(
+        source,
+        source_rate=8000,
+        target_rate=16000,
+    )
+    assert array("h", resampled).tolist() == [100, 100, -200, -200, 300, 300]
+
+
+def test_build_realtime_uri_contains_signed_params():
+    uri = build_realtime_uri(
+        app_id="1251925547",
+        secret_id="secret-id",
+        secret_key="secret-key",
+        engine_model_type="8k_zh",
+        voice_id="voice-id",
+        timestamp=1700000000,
+    )
+    parsed = urlparse(uri)
+    params = parse_qs(parsed.query)
+    assert parsed.scheme == "wss"
+    assert parsed.netloc == "asr.cloud.tencent.com"
+    assert parsed.path == "/asr/v2/1251925547"
+    assert params["engine_model_type"] == ["8k_zh"]
+    assert params["voice_id"] == ["voice-id"]
+    assert "signature" in params
