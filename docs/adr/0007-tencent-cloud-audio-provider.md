@@ -1,6 +1,6 @@
 # 中国电话音频使用腾讯云 8k ASR/TTS
 
-Android SIM 网关只承载蜂窝音频，不提供云端转写。中国大陆第一阶段采用腾讯云录音文件识别和语音合成：ASR 使用 `CreateRecTask` / `DescribeTaskStatus`（Version `2019-06-14`），电话模型 `8k_zh_large`，本地 WAV 以 `SourceType=1` 和 Base64 提交；TTS 使用 `TextToVoice`（Version `2019-08-23`），输出 8 kHz WAV。音频能力放在独立 `AudioProvider` 边界，Android 电话 Provider 只负责录音、DTMF 注入和播放合成音频。
+Android SIM 网关只承载蜂窝音频，不提供云端转写。中国大陆第一阶段采用腾讯云录音文件识别和语音合成：ASR 使用 `CreateRecTask` / `DescribeTaskStatus`（Version `2019-06-14`），默认电话模型 `8k_zh`，本地 WAV 以 `SourceType=1` 和 Base64 提交；`8k_zh_large` 保留为可配置的大模型选项但需要单独额度。TTS 使用 `TextToVoice`（Version `2019-08-23`），输出 8 kHz WAV。音频能力放在独立 `AudioProvider` 边界，Android 电话 Provider 只负责录音、DTMF 注入和播放合成音频。
 
 ## Consequences
 

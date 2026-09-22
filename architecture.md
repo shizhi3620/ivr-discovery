@@ -70,7 +70,7 @@ otherwise discovery refuses to spend a real call.
 `backend/audio/` separates speech processing from telephony:
 
 - `TencentAudioProvider.transcribe()` submits a local WAV with `CreateRecTask`
-  (`SourceType=1`, `8k_zh_large`) and polls `DescribeTaskStatus`.
+  (`SourceType=1`, `8k_zh`) and polls `DescribeTaskStatus`.
 - `TencentAudioProvider.synthesize()` calls `TextToVoice` with an 8 kHz WAV
   response and writes the result to a local file for FreeSWITCH playback.
 - TC3-HMAC-SHA256 signing is implemented locally with `httpx`; no Tencent SDK is
@@ -230,6 +230,6 @@ backend/
 - Backend: Python 3.12+, FastAPI, asyncio, `httpx`, `aiosqlite`
 - Frontend: React 18, TypeScript, Vite, React Flow, Dagre
 - AI: DeepSeek default, Anthropic optional
-- Audio: Tencent Cloud `8k_zh_large` ASR and `TextToVoice` TTS
+- Audio: Tencent Cloud `8k_zh` ASR and `TextToVoice` TTS
 - Telephony: Homebrew FreeSWITCH + rooted Android SIM gateway
 - Storage: SQLite

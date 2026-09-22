@@ -93,7 +93,7 @@ FreeSWITCH 必须加载 `mod_sndfile`，否则录音命令不会生成 WAV。本
 `/tmp/ivr-discovery-recordings`，可通过 `backend/.env` 覆盖；不要使用包含空格、
 逗号、花括号或引号的路径，这些字符会破坏 FreeSWITCH originate 变量解析。
 
-录音结束后，后端把 WAV 提交给腾讯云 `8k_zh_large` 做文件识别。`10010`
+录音结束后，后端把 WAV 提交给腾讯云 `8k_zh` 做文件识别。`10010`
 人工软电话验证不使用后端 Provider，因此不会自动生成该录音。
 
 ## 停止

@@ -49,7 +49,7 @@ class TestTencentAudioProvider:
                                 "TaskId": 123,
                                 "Status": 2,
                                 "StatusStr": "success",
-                                "Result": " 按1查询话费，按2人工服务。 ",
+                                "Result": "[0:0.000,0:1.230,0]  按1查询话费，按2人工服务。 ",
                             },
                             "RequestId": "r2",
                         }
@@ -74,7 +74,7 @@ class TestTencentAudioProvider:
             "DescribeTaskStatus",
         ]
         create_payload = requests[0][1]
-        assert create_payload["EngineModelType"] == "8k_zh_large"
+        assert create_payload["EngineModelType"] == "8k_zh"
         assert create_payload["SourceType"] == 1
         assert create_payload["ChannelNum"] == 2
         assert create_payload["DataLen"] == len(b"RIFF-test-audio")

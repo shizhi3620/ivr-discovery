@@ -5,7 +5,7 @@
 ## 录音文件识别 ASR
 
 - 产品接口：`CreateRecTask`，API Version `2019-06-14`，endpoint `asr.tencentcloudapi.com`，service `asr`。
-- 电话场景应使用 8k 引擎；当前实现默认 `EngineModelType=8k_zh_large`。
+- 电话场景应使用 8k 引擎；当前实现默认 `EngineModelType=8k_zh`，该标准引擎由录音文件识别免费包覆盖。`8k_zh_large` 可作为可选大模型引擎，但需要单独额度。
 - 本地音频 Base64 提交时必须使用 `SourceType=1`，并提供 `Data`（Base64 字符串）和 `DataLen`（未编码前的字节长度）。
 - 本地音频大小限制为 5 MB（含）。URL 提交使用 `SourceType=0` 和 `Url`。
 - `ResTextFormat=0` 返回基础识别文本；本实现不需要词级时间戳。

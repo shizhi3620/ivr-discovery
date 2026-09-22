@@ -14,6 +14,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -75,7 +76,7 @@ class TencentAudioProvider:
         self.asr_engine_model = (
             asr_engine_model
             if asr_engine_model is not None
-            else os.getenv("TENCENT_ASR_ENGINE_MODEL", "8k_zh_large")
+            else os.getenv("TENCENT_ASR_ENGINE_MODEL", "8k_zh")
         )
         self.asr_channel_num = (
             asr_channel_num
@@ -218,7 +219,7 @@ class TencentAudioProvider:
             status = int(data.get("Status", 0))
 
             if status == 2:
-                return str(data.get("Result") or "").strip()
+                return _normalize_transcript(str(data.get("Result") or ""))
             if status == 3:
                 detail = data.get("ErrorMsg") or data.get("StatusStr") or "unknown error"
                 raise AudioProviderError(f"Tencent ASR task failed: {detail}")
@@ -338,6 +339,15 @@ def _sign_tc3(secret_key: str, date: str, service: str, string_to_sign: str) -> 
         string_to_sign.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
+
+
+def _normalize_transcript(text: str) -> str:
+    """Remove Tencent's per-line channel/time markers from ``Result``."""
+    marker = re.compile(
+        r"^\[\d+:\d+(?:\.\d+)?,\d+:\d+(?:\.\d+)?,\d+\]\s*",
+        re.MULTILINE,
+    )
+    return marker.sub("", text).strip()
 
 
 __all__ = ["TencentAudioProvider"]

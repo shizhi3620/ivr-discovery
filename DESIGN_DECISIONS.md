@@ -227,7 +227,7 @@ Key architectural and design decisions made during implementation, with alternat
 - **Call Tencent APIs directly from `AndroidSimGatewayProvider`**: fewer classes, but mixes carrier transport with speech vendors and makes testing require telephone state.
 - **Rely on FreeSWITCH modules for ASR/TTS**: keeps audio local, but requires additional services/models and less predictable Mandarin telephone quality.
 
-**Why the boundary wins**: Tencent's `8k_zh_large` and `TextToVoice` can be mocked independently, the transport provider only exposes audio files, and a future local ASR/TTS implementation can replace Tencent without touching FreeSWITCH/ESL code.
+**Why the boundary wins**: Tencent's `8k_zh` and `TextToVoice` can be mocked independently, the transport provider only exposes audio files, and a future local ASR/TTS implementation can replace Tencent without touching FreeSWITCH/ESL code.
 
 ---
 

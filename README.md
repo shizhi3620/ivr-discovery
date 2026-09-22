@@ -52,7 +52,7 @@ See [architecture.md](architecture.md) for the full system design with sequence 
 - **Backend**: Python 3.12, FastAPI, asyncio, aiosqlite
 - **Frontend**: React 18, TypeScript, Vite, React Flow, Dagre, Tailwind CSS
 - **AI**: DeepSeek (default), Anthropic optional
-- **Audio**: Tencent Cloud `8k_zh_large` ASR + `TextToVoice` TTS
+- **Audio**: Tencent Cloud `8k_zh` ASR + `TextToVoice` TTS
 - **Telephony**: rooted Android SIM gateway via FreeSWITCH (default), Bland optional
 - **Data**: SQLite (zero-config, file-based)
 - **Realtime**: WebSocket (bidirectional, single connection)

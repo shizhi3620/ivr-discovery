@@ -9,7 +9,7 @@ A system that calls IVR (Interactive Voice Response) phone trees, discovers thei
 - **Realtime**: WebSockets (FastAPI native ↔ React)
 - **Database**: SQLite
 - **AI**: DeepSeek by default; Anthropic optional
-- **Audio**: Tencent Cloud `8k_zh_large` ASR and `TextToVoice` TTS
+- **Audio**: Tencent Cloud `8k_zh` ASR and `TextToVoice` TTS
 - **Telephony**: rooted Android SIM gateway via FreeSWITCH by default
 - **Discovery**: BFS with concurrency limits
 - **Testing**: pytest (backend), Vitest (frontend)

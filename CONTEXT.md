@@ -37,7 +37,7 @@ _Avoid_: 语音播放、语音克隆
 _Avoid_: 腾讯云客户端、ASR 工具类
 
 **腾讯云音频 Provider**:
-中国大陆场景默认的音频 Provider，使用 `8k_zh_large` 录音文件识别和 8 kHz `TextToVoice` 合成。
+中国大陆场景默认的音频 Provider，使用免费资源包覆盖的 `8k_zh` 录音文件识别和 8 kHz `TextToVoice` 合成。
 _Avoid_: 默认 ASR 客户端、微信语音
 
 **AI Provider**:
