@@ -6,6 +6,14 @@ env_file="${here}/.env.local"
 runtime="${here}/.runtime"
 template="${here}/conf"
 
+# shellcheck disable=SC1091
+source "${here}/scripts/lib.sh"
+
+if existing_pid="$(freeswitch_running_pid "${here}")" && [[ -n "${existing_pid}" ]]; then
+  echo "FreeSWITCH 已在运行 (pid ${existing_pid})；禁止重复启动并覆盖共享运行库。" >&2
+  exit 1
+fi
+
 if [[ ! -f "${env_file}" ]]; then
   echo "缺少 ${env_file}，请先复制 .env.example 并填写密码。" >&2
   exit 1

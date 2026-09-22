@@ -36,6 +36,11 @@ cp .env.example .env.local
 ./scripts/run.sh     # 前台启动
 ```
 
+同一份 `.runtime/db` 只能由一个 FreeSWITCH 实例访问。`start.sh` 和 `run.sh`
+会检查当前实例；已有实例运行时必须拒绝重复启动。需要修改配置时先执行
+`./scripts/stop.sh`，再重新执行 `start.sh` 和 `run.sh`。不要在旧进程仍
+占用 5060/ESL 端口时直接再次渲染或启动。
+
 另开一个终端验证：
 
 ```bash
