@@ -214,3 +214,45 @@ class TestExploreNodeProviderBoundary:
         assert stored.status == NodeStatus.COMPLETED
         assert stored.cost == 0.02
         assert stored.transcript == "Press 1 for billing, press 2 for support."
+
+    @pytest.mark.asyncio
+    async def test_human_transfer_stops_branch_expansion(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from discovery import explore_node
+        from models import Node, Session
+        from providers.base import CallResult, ProviderCapabilities, STATUS_COMPLETED
+
+        provider = MagicMock()
+        provider.name = "fake_asr"
+        provider.capabilities = ProviderCapabilities(transcript=True, speech=True, dtmf=True)
+        provider.place_call = AsyncMock(return_value="call-1")
+        provider.wait_for_call = AsyncMock(
+            return_value=CallResult(
+                "call-1",
+                STATUS_COMPLETED,
+                transcript="Please hold while we connect you to an agent.",
+            )
+        )
+
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+        session = Session(phone_number="4006668800")
+        await db.create_session(session)
+        node = Node(session_id=session.id)
+        await db.create_node(node)
+
+        parsed = {
+            "prompt_text": "Please hold while we connect you to an agent.",
+            "human_transfer": True,
+            "options": [{"dtmf_key": "1", "label": "This must be ignored"}],
+        }
+        with patch(
+            "discovery.transcript_parser.parse_transcript",
+            new=AsyncMock(return_value=parsed),
+        ):
+            options = await explore_node(ws, session, node, provider)
+
+        assert options == []
+        stored = await db.get_node(node.id)
+        assert stored.status == NodeStatus.COMPLETED
+        assert stored.prompt_text.startswith("(human/queue)")

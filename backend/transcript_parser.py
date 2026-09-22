@@ -27,10 +27,13 @@ IMPORTANT RULES:
 7. If no menu was presented, return an empty options array
 8. For conversational IVRs that say "you can say things like X, Y, or Z" — those ARE the menu options
 9. Include explicit end-call or opt-out choices (for example "结束通话") as terminal options; they are part of the call flow
+10. Preserve the IVR's original language in prompt_text and option labels. Do not translate English prompts into Chinese or Chinese prompts into English
+11. Set human_transfer to true when the call reaches a live agent, representative, queue, "please hold", or an equivalent human-service boundary
 
 Return ONLY valid JSON:
 {
   "prompt_text": "Brief summary of what the IVR said at THIS menu level (after any button press)",
+  "human_transfer": false,
   "options": [
     {"dtmf_key": "1", "label": "Billing"},
     {"dtmf_key": "2", "label": "Technical support"}

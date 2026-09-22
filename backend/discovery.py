@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 MAX_CONCURRENT_CALLS = max(1, int(os.getenv("MAX_CONCURRENT_CALLS", "1")))
 MAX_DEPTH = 3
 MIN_TRANSCRIPT_LENGTH = 20  # Retry if transcript is shorter than this
+ROOT_CALL_MAX_DURATION = max(1, int(os.getenv("ROOT_CALL_MAX_DURATION", "60")))
+BRANCH_CALL_MAX_DURATION = max(1, int(os.getenv("BRANCH_CALL_MAX_DURATION", "45")))
+CALL_COOLDOWN_SECONDS = max(0.0, float(os.getenv("CALL_COOLDOWN_SECONDS", "0")))
 
 
 async def send_json(ws: WebSocket, data: dict):
@@ -100,7 +103,7 @@ async def explore_node(
 
         # Root calls get longer to hear full menu; branch calls are shorter
         is_root = not node.parent_id
-        max_dur = 60 if is_root else 45
+        max_dur = ROOT_CALL_MAX_DURATION if is_root else BRANCH_CALL_MAX_DURATION
 
         # Stream live transcript to frontend as it arrives
         async def on_transcript(text: str):
@@ -155,6 +158,9 @@ async def explore_node(
             concatenated = call_result.transcript
             cost += call_result.cost
 
+            if CALL_COOLDOWN_SECONDS:
+                await asyncio.sleep(CALL_COOLDOWN_SECONDS)
+
             # Retry on busy (line occupied by another call) or short transcript
             if call_status == STATUS_BUSY and attempt < max_attempts - 1:
                 wait = 5 + attempt * 5  # 5s, 10s backoff
@@ -200,6 +206,21 @@ async def explore_node(
         parsed = await transcript_parser.parse_transcript(concatenated)
         prompt_text = parsed.get("prompt_text", concatenated[:200])
         options = parsed.get("options", [])
+
+        if parsed.get("human_transfer"):
+            boundary_prompt = f"(human/queue) {prompt_text or 'Human service boundary'}"
+            await db.update_node(
+                node.id,
+                status=NodeStatus.COMPLETED,
+                prompt_text=boundary_prompt,
+            )
+            await send_json(ws, {
+                "type": "node_updated",
+                "node_id": node.id,
+                "status": "completed",
+                "prompt_text": boundary_prompt,
+            })
+            return []
 
         # Mark node as completed
         await db.update_node(node.id, status=NodeStatus.COMPLETED, prompt_text=prompt_text)

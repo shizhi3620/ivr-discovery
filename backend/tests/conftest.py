@@ -5,6 +5,9 @@ import sys
 
 import pytest
 
+# Keep tests fast and deterministic even when a local .env adds call spacing.
+os.environ["CALL_COOLDOWN_SECONDS"] = "0"
+
 # Add backend dir to path so imports work
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
