@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from functools import lru_cache
 
 from dotenv import load_dotenv
@@ -32,7 +33,12 @@ def _corrections() -> tuple[tuple[str, str], ...]:
 def apply_asr_corrections(text: str) -> str:
     corrected = text
     for source, target in _corrections():
-        corrected = corrected.replace(source, target)
+        corrected = re.sub(
+            re.escape(source),
+            target,
+            corrected,
+            flags=re.IGNORECASE,
+        )
     return corrected
 
 
