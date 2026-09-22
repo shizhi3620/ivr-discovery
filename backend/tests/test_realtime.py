@@ -71,6 +71,55 @@ async def test_decision_stops_on_human_boundary():
     ]
 
 
+@pytest.mark.asyncio
+async def test_partial_text_does_not_end_the_prompt():
+    events: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        events.append(event)
+
+    engine = RealtimeDecisionEngine(
+        channel_uuid="channel",
+        exploration_call_id="call",
+        target_key="1",
+        on_event=on_event,
+        silence_ms=20,
+        no_speech_timeout_ms=1000,
+    )
+    await engine.start()
+    await engine.feed("Apple", is_final=False)
+    await asyncio.sleep(0.05)
+    assert events == []
+    await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_multiple_final_sentences_can_form_one_menu():
+    events: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        events.append(event)
+
+    engine = RealtimeDecisionEngine(
+        channel_uuid="channel",
+        exploration_call_id="call",
+        target_key="1",
+        on_event=on_event,
+        silence_ms=20,
+        menu_completion_ms=200,
+        no_speech_timeout_ms=1000,
+    )
+    await engine.start()
+    await engine.feed("这是一段隐私说明。", is_final=True)
+    await asyncio.sleep(0.05)
+    assert events == []
+    await engine.feed("如果您同意，请按1。", is_final=True)
+    await asyncio.sleep(0.05)
+    await engine.close()
+
+    assert events[-1]["event_type"] == "dtmf_ready"
+
+
 def test_decode_l16be_stereo_selects_remote_channel():
     left = array("h", [1000, -1000])
     right = array("h", [2000, -2000])

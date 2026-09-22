@@ -15,7 +15,9 @@ from dotenv import load_dotenv
 
 from realtime.audio import (
     AudioFormatError,
+    apply_gain_pcm16,
     decode_to_mono_pcm,
+    pcm16_rms,
     resample_pcm16_mono,
 )
 from realtime.decision import RealtimeDecisionEngine
@@ -110,6 +112,9 @@ class RealtimeRelay:
             channels = int(metadata.get("channels", 2))
             remote_channel = int(metadata.get("remote_channel", 0))
             sample_rate = int(metadata.get("sample_rate", 8000))
+            gain = float(metadata.get("gain", 1.0))
+            debug_audio = os.getenv("REALTIME_DEBUG_AUDIO") == "1"
+            frame_count = 0
 
             async def publish(event: dict[str, Any]) -> None:
                 await self.event_bus.publish(event)
@@ -120,6 +125,9 @@ class RealtimeRelay:
                 target_key=str(target_key) if target_key is not None else None,
                 on_event=publish,
                 silence_ms=int(metadata.get("silence_ms", 800)),
+                menu_completion_ms=int(
+                    metadata.get("menu_completion_ms", 3000)
+                ),
                 no_speech_timeout_ms=int(
                     metadata.get("no_speech_timeout_ms", 5000)
                 ),
@@ -193,6 +201,7 @@ class RealtimeRelay:
             async for payload in websocket:
                 if not isinstance(payload, bytes):
                     continue
+                frame_count += 1
                 pcm = decode_to_mono_pcm(
                     payload,
                     encoding=encoding,
@@ -204,6 +213,17 @@ class RealtimeRelay:
                     source_rate=sample_rate,
                     target_rate=16000,
                 )
+                pcm = apply_gain_pcm16(pcm, gain)
+                if debug_audio and (
+                    frame_count <= 5 or frame_count % 50 == 0
+                ):
+                    logger.info(
+                        "audio frame=%d bytes=%d rms=%.1f channel=%d",
+                        frame_count,
+                        len(pcm),
+                        pcm16_rms(pcm),
+                        remote_channel,
+                    )
                 await asr.send_audio(pcm)
         except asyncio.CancelledError:
             raise

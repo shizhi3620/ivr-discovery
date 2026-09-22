@@ -83,6 +83,7 @@ class RealtimeDecisionEngine:
         target_key: str | None,
         on_event: EventCallback,
         silence_ms: int = 800,
+        menu_completion_ms: int = 3000,
         no_speech_timeout_ms: int = 5000,
     ) -> None:
         self.channel_uuid = channel_uuid
@@ -90,6 +91,7 @@ class RealtimeDecisionEngine:
         self.target_key = target_key
         self.on_event = on_event
         self.silence_seconds = max(0.0, silence_ms / 1000)
+        self.menu_completion_seconds = max(0.0, menu_completion_ms / 1000)
         self.no_speech_timeout_seconds = max(0.0, no_speech_timeout_ms / 1000)
         self._revision = 0
         self._final_text = ""
@@ -122,13 +124,14 @@ class RealtimeDecisionEngine:
         if is_final:
             self._final_text = f"{self._final_text} {text}".strip()
 
-        self._seen_keys.update(extract_dtmf_keys(text))
-        self._revision += 1
-        if self._settle_task and not self._settle_task.done():
-            self._settle_task.cancel()
-        self._settle_task = asyncio.create_task(
-            self._settle_after_silence(self._revision)
-        )
+        if is_final:
+            self._seen_keys.update(extract_dtmf_keys(text))
+            self._revision += 1
+            if self._settle_task and not self._settle_task.done():
+                self._settle_task.cancel()
+            self._settle_task = asyncio.create_task(
+                self._settle_after_silence(self._revision)
+            )
 
     async def close(self) -> None:
         self._stopped = True
@@ -138,7 +141,12 @@ class RealtimeDecisionEngine:
 
     async def _settle_after_silence(self, revision: int) -> None:
         try:
-            await asyncio.sleep(self.silence_seconds)
+            delay = (
+                self.silence_seconds
+                if self.target_key and self.target_key in self._seen_keys
+                else self.menu_completion_seconds
+            )
+            await asyncio.sleep(delay)
         except asyncio.CancelledError:
             return
         if self._stopped or revision != self._revision:

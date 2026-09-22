@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from array import array
 
 
@@ -69,3 +70,32 @@ def resample_pcm16_mono(
     raise AudioFormatError(
         f"unsupported sample-rate conversion {source_rate} -> {target_rate}"
     )
+
+
+def pcm16_rms(payload: bytes) -> float:
+    """Return RMS amplitude for mono PCM16 audio."""
+    if not payload:
+        return 0.0
+    samples = array("h")
+    samples.frombytes(payload)
+    if not samples:
+        return 0.0
+    return math.sqrt(sum(sample * sample for sample in samples) / len(samples))
+
+
+def apply_gain_pcm16(payload: bytes, gain: float) -> bytes:
+    """Apply linear gain with PCM16 clipping."""
+    if gain == 1.0:
+        return payload
+    if gain < 0:
+        raise AudioFormatError("gain must be non-negative")
+    samples = array("h")
+    samples.frombytes(payload)
+    output = array(
+        "h",
+        (
+            max(-32768, min(32767, int(sample * gain)))
+            for sample in samples
+        ),
+    )
+    return output.tobytes()
