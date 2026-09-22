@@ -1,9 +1,9 @@
-"""Tests for transcript_parser — deduplication, filtering, and Claude response parsing."""
+"""Tests for transcript_parser — deduplication, filtering, and AI response parsing."""
 
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -79,16 +79,17 @@ class TestDeduplicateOptions:
         assert len(result) == 0
 
 
-# --- Integration tests with mocked Claude ---
+# --- Integration tests with a mocked AI Provider ---
 
 
-def make_claude_response(content: dict) -> MagicMock:
-    """Build a mock Claude API response."""
-    msg = MagicMock()
-    block = MagicMock()
-    block.text = json.dumps(content)
-    msg.content = [block]
-    return msg
+def make_ai_provider(content: dict | str) -> AsyncMock:
+    """Build a mock AI Provider returning JSON text."""
+    provider = AsyncMock()
+    provider.capabilities.json_mode = True
+    provider.complete.return_value = (
+        content if isinstance(content, str) else json.dumps(content)
+    )
+    return provider
 
 
 @pytest.mark.asyncio
@@ -101,86 +102,78 @@ class TestParseTranscript:
         result = await parse_transcript("hi")
         assert result == {"prompt_text": "", "options": []}
 
-    @patch.object(transcript_parser, "client")
-    async def test_parses_dtmf_menu(self, mock_client):
-        mock_client.messages.create = AsyncMock(
-            return_value=make_claude_response({
-                "prompt_text": "Welcome to USPS",
-                "human_transfer": False,
-                "options": [
-                    {"dtmf_key": "1", "label": "Track a package"},
-                    {"dtmf_key": "2", "label": "Buy stamps"},
-                    {"dtmf_key": "3", "label": "Schedule pickup"},
-                ],
-            })
+    async def test_parses_dtmf_menu(self):
+        provider = make_ai_provider({
+            "prompt_text": "Welcome to USPS",
+            "human_transfer": False,
+            "options": [
+                {"dtmf_key": "1", "label": "Track a package"},
+                {"dtmf_key": "2", "label": "Buy stamps"},
+                {"dtmf_key": "3", "label": "Schedule pickup"},
+            ],
+        })
+        result = await parse_transcript(
+            "user: Press 1 for tracking, 2 for stamps, 3 for pickup",
+            provider=provider,
         )
-        result = await parse_transcript("user: Press 1 for tracking, 2 for stamps, 3 for pickup")
         assert result["prompt_text"] == "Welcome to USPS"
         assert len(result["options"]) == 3
         assert result["options"][0]["dtmf_key"] == "1"
         assert result["human_transfer"] is False
 
-    @patch.object(transcript_parser, "client")
-    async def test_human_transfer_detected(self, mock_client):
-        mock_client.messages.create = AsyncMock(
-            return_value=make_claude_response({
-                "prompt_text": "Connecting you to a representative",
-                "human_transfer": True,
-                "options": [],
-            })
+    async def test_human_transfer_detected(self):
+        provider = make_ai_provider({
+            "prompt_text": "Connecting you to a representative",
+            "human_transfer": True,
+            "options": [],
+        })
+        result = await parse_transcript(
+            "user: Please hold while I connect you to a representative",
+            provider=provider,
         )
-        result = await parse_transcript("user: Please hold while I connect you to a representative")
         assert result["human_transfer"] is True
         assert result["options"] == []
 
-    @patch.object(transcript_parser, "client")
-    async def test_filters_navigation_from_claude(self, mock_client):
-        mock_client.messages.create = AsyncMock(
-            return_value=make_claude_response({
-                "prompt_text": "Main menu",
-                "human_transfer": False,
-                "options": [
-                    {"dtmf_key": "1", "label": "Billing"},
-                    {"dtmf_key": "9", "label": "Repeat"},
-                    {"dtmf_key": "*", "label": "Main Menu"},
-                ],
-            })
+    async def test_filters_navigation_options(self):
+        provider = make_ai_provider({
+            "prompt_text": "Main menu",
+            "human_transfer": False,
+            "options": [
+                {"dtmf_key": "1", "label": "Billing"},
+                {"dtmf_key": "9", "label": "Repeat"},
+                {"dtmf_key": "*", "label": "Main Menu"},
+            ],
+        })
+        result = await parse_transcript(
+            "user: Press 1 for billing, 9 to repeat, star for main menu",
+            provider=provider,
         )
-        result = await parse_transcript("user: Press 1 for billing, 9 to repeat, star for main menu")
         assert len(result["options"]) == 1
         assert result["options"][0]["label"] == "Billing"
 
-    @patch.object(transcript_parser, "client")
-    async def test_handles_markdown_code_block(self, mock_client):
+    async def test_handles_markdown_code_block(self):
         content = {
             "prompt_text": "Welcome",
             "human_transfer": False,
             "options": [{"dtmf_key": "1", "label": "Help"}],
         }
-        msg = MagicMock()
-        block = MagicMock()
-        block.text = f"```json\n{json.dumps(content)}\n```"
-        msg.content = [block]
-        mock_client.messages.create = AsyncMock(return_value=msg)
-
-        result = await parse_transcript("user: Press 1 for help")
+        provider = make_ai_provider(f"```json\n{json.dumps(content)}\n```")
+        result = await parse_transcript("user: Press 1 for help", provider=provider)
         assert len(result["options"]) == 1
 
-    @patch.object(transcript_parser, "client")
-    async def test_handles_invalid_json(self, mock_client):
-        msg = MagicMock()
-        block = MagicMock()
-        block.text = "this is not json"
-        msg.content = [block]
-        mock_client.messages.create = AsyncMock(return_value=msg)
-
-        result = await parse_transcript("user: some transcript text here that is long enough")
+    async def test_handles_invalid_json(self):
+        provider = make_ai_provider("this is not json")
+        result = await parse_transcript(
+            "user: some transcript text here that is long enough",
+            provider=provider,
+        )
         assert result["options"] == []
         assert len(result["prompt_text"]) > 0  # Falls back to transcript[:200]
 
-    @patch.object(transcript_parser, "client")
-    async def test_handles_api_error(self, mock_client):
-        mock_client.messages.create = AsyncMock(side_effect=Exception("API down"))
+    async def test_handles_api_error(self):
+        provider = AsyncMock()
+        provider.capabilities.json_mode = True
+        provider.complete.side_effect = Exception("API down")
 
-        result = await parse_transcript("user: Press 1 for billing")
+        result = await parse_transcript("user: Press 1 for billing", provider=provider)
         assert result == {"prompt_text": "", "options": []}

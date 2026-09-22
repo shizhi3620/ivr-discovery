@@ -1,17 +1,15 @@
 from __future__ import annotations
 
 import json
-import os
 import logging
 
-from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
+
+from ai import AIProvider, get_ai_provider
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
-
-client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
 
 PARSE_PROMPT = """You are analyzing a transcript from an IVR (Interactive Voice Response) phone system call. Our AI agent called the number and listened. In the transcript, "user" is the IVR system speaking, and "assistant"/"agent" is our listener.
 
@@ -81,8 +79,12 @@ def _deduplicate_options(options: list[dict]) -> list[dict]:
     return deduped
 
 
-async def parse_transcript(transcript_text: str) -> dict:
-    """Parse an IVR transcript and extract menu structure using Claude.
+async def parse_transcript(
+    transcript_text: str,
+    *,
+    provider: AIProvider | None = None,
+) -> dict:
+    """Parse an IVR transcript and extract menu structure using the AI Provider.
 
     Returns {"prompt_text": str, "options": [{"dtmf_key": str, "label": str}]}
     """
@@ -90,18 +92,12 @@ async def parse_transcript(transcript_text: str) -> dict:
         return {"prompt_text": "", "options": []}
 
     try:
-        response = await client.messages.create(
-            model="claude-sonnet-4-20250514",
+        provider = provider or get_ai_provider()
+        text = (await provider.complete(
+            PARSE_PROMPT + transcript_text,
             max_tokens=1024,
-            messages=[
-                {
-                    "role": "user",
-                    "content": PARSE_PROMPT + transcript_text,
-                }
-            ],
-        )
-
-        text = response.content[0].text.strip()
+            json_mode=provider.capabilities.json_mode,
+        )).strip()
 
         # Extract JSON from response (handle markdown code blocks)
         if text.startswith("```"):
@@ -136,7 +132,7 @@ async def parse_transcript(transcript_text: str) -> dict:
         return {"prompt_text": prompt_text, "options": valid_options, "human_transfer": human_transfer}
 
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse Claude response as JSON: {e}")
+        logger.error(f"Failed to parse AI response as JSON: {e}")
         return {"prompt_text": transcript_text[:200], "options": []}
     except Exception as e:
         logger.exception(f"Error parsing transcript: {e}")
