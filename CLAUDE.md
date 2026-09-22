@@ -15,10 +15,13 @@ A system that calls IVR (Interactive Voice Response) phone trees via the Bland A
 ## Architecture
 ```
 React (Vite) ←— WebSocket —→ FastAPI
-                                 ├── Bland AI API (place calls, get transcripts)
+                                 ├── Telephony Provider (android_sim default | bland)
                                  ├── Claude API (parse transcripts → menu options)
                                  └── SQLite (persist tree state)
 ```
+
+Telephony goes through `backend/providers/` — see `docs/adr/0004`. Select with
+`TELEPHONY_PROVIDER` (`android_sim` default, `bland` for the original demo).
 
 ## Key APIs
 - **Bland AI**: Docs at https://docs.bland.ai
@@ -62,7 +65,12 @@ Client → Server:
 backend/
   main.py              — FastAPI app, WebSocket endpoint
   discovery.py         — BFS discovery engine
-  bland_client.py      — Bland AI API wrapper
+  providers/           — telephony Provider boundary (ADR 0004)
+    base.py            — TelephonyProvider protocol + CallResult/capabilities
+    android_sim_provider.py — FreeSWITCH ESL → Android SIM gateway (default)
+    bland_provider.py  — Bland AI adapter
+    esl.py             — minimal FreeSWITCH ESL client
+  bland_client.py      — Bland AI API wrapper (used by bland_provider)
   transcript_parser.py — Claude-based transcript analysis
   models.py            — SQLite models/schema
   tests/

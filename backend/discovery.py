@@ -5,10 +5,11 @@ import logging
 
 from fastapi import WebSocket
 
-import bland_client
 import database as db
 import transcript_parser
 from models import Session, Node, Edge, NodeStatus, SessionStatus
+from providers import TelephonyProvider, get_provider
+from providers.base import STATUS_BUSY, STATUS_COMPLETED
 
 logger = logging.getLogger(__name__)
 
@@ -70,11 +71,17 @@ async def explore_node(
     ws: WebSocket,
     session: Session,
     node: Node,
+    provider: TelephonyProvider | None = None,
 ) -> list[dict]:
     """Explore a single IVR node: place call, wait, parse transcript.
 
     Returns list of {"dtmf_key": str, "label": str} for discovered options.
+
+    Telephony execution is delegated to `provider`; this function only owns the
+    discovery-level retry policy and transcript parsing.
     """
+    provider = provider or get_provider()
+
     # Update node to calling
     await db.update_node(node.id, status=NodeStatus.CALLING)
     await send_json(ws, {
@@ -84,13 +91,10 @@ async def explore_node(
     })
 
     try:
-        # Determine call type: DTMF navigation, voice navigation, or root
-        task = None
+        # Determine call type: DTMF navigation, voice navigation, or root.
+        # The provider resolves these into its own vendor-specific call setup.
         dtmf_seq = node.dtmf_path or None
-
-        if node.voice_option:
-            task = bland_client.voice_branch_task(node.voice_option)
-            dtmf_seq = None
+        voice_option = node.voice_option or None
 
         # Root calls get longer to hear full menu; branch calls are shorter
         is_root = not node.parent_id
@@ -104,6 +108,25 @@ async def explore_node(
                 "text": text,
             })
 
+        # Discovery is transcript-driven. A provider without ASR cannot feed the
+        # parser, so fail fast *without dialing* rather than placing a real call
+        # that could produce nothing (see docs/adr/0004). The Android SIM path
+        # becomes usable once the ASR/TTS stage lands.
+        if not provider.capabilities.transcript:
+            message = (
+                f"Provider '{provider.name}' has no transcript capability; "
+                "ASR stage is not wired in yet"
+            )
+            logger.warning("Node %s: %s", node.id[:8], message)
+            await db.update_node(node.id, status=NodeStatus.FAILED, prompt_text=message)
+            await send_json(ws, {
+                "type": "node_updated",
+                "node_id": node.id,
+                "status": "failed",
+                "prompt_text": message,
+            })
+            return []
+
         # Retry loop: retry once if transcript is too short (silence/dropped call)
         concatenated = ""
         call_status = "unknown"
@@ -111,15 +134,12 @@ async def explore_node(
         max_attempts = 3  # Retry on busy/short transcript
 
         for attempt in range(max_attempts):
-            result = await bland_client.place_call(
-                phone_number=session.phone_number,
-                task=task,
+            call_id = await provider.place_call(
+                session.phone_number,
                 dtmf_sequence=dtmf_seq,
+                voice_option=voice_option,
                 max_duration=max_dur,
             )
-            call_id = result.get("call_id")
-            if not call_id:
-                raise Exception(f"No call_id in response: {result}")
 
             await db.update_node(node.id, call_id=call_id)
             await send_json(ws, {
@@ -129,13 +149,13 @@ async def explore_node(
                 "call_id": call_id,
             })
 
-            call_data = await bland_client.wait_for_call(call_id, on_transcript=on_transcript)
-            call_status = call_data.get("status", "unknown")
-            concatenated = call_data.get("concatenated_transcript", "")
-            cost += call_data.get("price", 0.0) or 0.0
+            call_result = await provider.wait_for_call(call_id, on_transcript=on_transcript)
+            call_status = call_result.status
+            concatenated = call_result.transcript
+            cost += call_result.cost
 
             # Retry on busy (line occupied by another call) or short transcript
-            if call_status == "busy" and attempt < max_attempts - 1:
+            if call_status == STATUS_BUSY and attempt < max_attempts - 1:
                 wait = 5 + attempt * 5  # 5s, 10s backoff
                 logger.info(f"Node {node.id[:8]}... line busy, retrying in {wait}s (attempt {attempt + 1})")
                 await asyncio.sleep(wait)
@@ -146,7 +166,7 @@ async def explore_node(
             if attempt < max_attempts - 1:
                 logger.info(f"Node {node.id[:8]}... short transcript ({len(concatenated)} chars), retrying")
 
-        if call_status not in ("completed",):
+        if call_status != STATUS_COMPLETED:
             await db.update_node(
                 node.id,
                 status=NodeStatus.FAILED,
@@ -283,7 +303,12 @@ async def send_session_status(ws: WebSocket, session: Session):
     })
 
 
-async def run_discovery(ws: WebSocket, phone_number: str, session: Session):
+async def run_discovery(
+    ws: WebSocket,
+    phone_number: str,
+    session: Session,
+    provider: TelephonyProvider | None = None,
+):
     """Run concurrent discovery of the IVR tree using a worker pool.
 
     Uses fingerprint-based cycle detection: each set of parsed options is
@@ -291,6 +316,7 @@ async def run_discovery(ws: WebSocket, phone_number: str, session: Session):
     that exact menu elsewhere in the tree, we skip it — the IVR looped
     back to a previously-explored menu.
     """
+    provider = provider or get_provider()
     await db.update_session(session.id, status=SessionStatus.RUNNING)
 
     queue: asyncio.PriorityQueue[tuple[int, str, Node]] = asyncio.PriorityQueue()
@@ -322,7 +348,7 @@ async def run_discovery(ws: WebSocket, phone_number: str, session: Session):
                     continue
 
                 logger.info(f"[W{worker_id}] Exploring {node.id[:8]}... (depth={depth}, path={node.dtmf_path or 'root'})")
-                options = await explore_node(ws, session, node)
+                options = await explore_node(ws, session, node, provider)
                 await send_session_status(ws, session)
 
                 if not options:
@@ -395,8 +421,13 @@ async def run_discovery(ws: WebSocket, phone_number: str, session: Session):
     logger.info(f"Discovery {final_status.value}: {len(nodes)} nodes, ${total_cost:.4f} total cost, {len(seen_menus)} unique menus")
 
 
-async def rediscover_subtree(ws: WebSocket, node_id: str):
+async def rediscover_subtree(
+    ws: WebSocket,
+    node_id: str,
+    provider: TelephonyProvider | None = None,
+):
     """Delete a node's children and re-explore it as a mini discovery."""
+    provider = provider or get_provider()
     node = await db.get_node(node_id)
     if not node:
         await send_json(ws, {"type": "error", "message": "Node not found"})
@@ -455,7 +486,7 @@ async def rediscover_subtree(ws: WebSocket, node_id: str):
                     })
                     continue
 
-                options = await explore_node(ws, session, n)
+                options = await explore_node(ws, session, n, provider)
                 await send_session_status(ws, session)
 
                 if not options:

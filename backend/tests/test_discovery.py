@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+import database as db
 from discovery import options_fingerprint, get_node_depth, is_cycle, _core_label
 from models import Node, NodeStatus
 
@@ -138,3 +139,78 @@ class TestIsCycle:
         assert not is_cycle(frozenset(), seen)
 
 
+
+
+class TestExploreNodeProviderBoundary:
+    """explore_node must delegate telephony to the injected Provider."""
+
+    @pytest.mark.asyncio
+    async def test_fails_fast_without_transcript_capability(self):
+        """A provider with no ASR must not place a real call."""
+        from unittest.mock import AsyncMock, MagicMock
+        from discovery import explore_node
+        from models import Node, Session
+        from providers.base import CallResult, ProviderCapabilities, STATUS_COMPLETED
+
+        provider = MagicMock()
+        provider.name = "fake_no_asr"
+        provider.capabilities = ProviderCapabilities(transcript=False, dtmf=True)
+        provider.place_call = AsyncMock()
+
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+        session = Session(phone_number="10010")
+        await db.create_session(session)
+        node = Node(session_id=session.id)
+        await db.create_node(node)
+
+        options = await explore_node(ws, session, node, provider)
+
+        assert options == []
+        provider.place_call.assert_not_awaited()
+
+        stored = await db.get_node(node.id)
+        assert stored.status == NodeStatus.FAILED
+        assert "no transcript capability" in stored.prompt_text
+
+    @pytest.mark.asyncio
+    async def test_uses_provider_result_and_parses_transcript(self):
+        """With a transcript-capable provider, the parsed options flow through."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from discovery import explore_node
+        from models import Node, Session
+        from providers.base import CallResult, ProviderCapabilities, STATUS_COMPLETED
+
+        provider = MagicMock()
+        provider.name = "fake_asr"
+        provider.capabilities = ProviderCapabilities(transcript=True, speech=True, dtmf=True)
+        provider.place_call = AsyncMock(return_value="call-1")
+        provider.wait_for_call = AsyncMock(
+            return_value=CallResult(
+                "call-1",
+                STATUS_COMPLETED,
+                transcript="Press 1 for billing, press 2 for support.",
+                cost=0.02,
+            )
+        )
+
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+        session = Session(phone_number="+18002758777")
+        await db.create_session(session)
+        node = Node(session_id=session.id)
+        await db.create_node(node)
+
+        parsed = {
+            "prompt_text": "Main menu",
+            "options": [{"dtmf_key": "1", "label": "Billing"}],
+        }
+        with patch("discovery.transcript_parser.parse_transcript", new=AsyncMock(return_value=parsed)):
+            options = await explore_node(ws, session, node, provider)
+
+        assert options == parsed["options"]
+        provider.place_call.assert_awaited_once()
+        stored = await db.get_node(node.id)
+        assert stored.status == NodeStatus.COMPLETED
+        assert stored.cost == 0.02
+        assert stored.transcript == "Press 1 for billing, press 2 for support."

@@ -28,10 +28,19 @@ Automated IVR phone tree explorer. Enter any phone number and the system places 
 Browser (React + React Flow)
     ↕ WebSocket
 FastAPI Backend
-    → Bland AI (places calls, records transcripts)
+    → Telephony Provider (pluggable)
+        ├── AndroidSimGatewayProvider — China mainland (default): FreeSWITCH ESL
+        │     → rooted Android phone (SIM gateway) → carrier IVR
+        └── BlandProvider — non-default: Bland AI places calls + returns transcript
     → Claude Sonnet (parses transcripts into structured menu options)
     → SQLite (persists sessions, nodes, edges)
 ```
+
+Telephony is behind a Provider seam (`backend/providers/`), selected with
+`TELEPHONY_PROVIDER` (`android_sim` default, or `bland`). Providers declare their
+capabilities, because they are not interchangeable: Bland returns its own ASR
+transcript, while the Android SIM gateway only carries audio. See
+[docs/adr/0004](docs/adr/0004-telephony-provider-boundary.md).
 
 See [architecture.md](architecture.md) for the full system design with sequence diagrams.
 

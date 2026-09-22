@@ -133,10 +133,10 @@ async def health():
 
 @app.get("/api/recover-stuck")
 async def recover_stuck_nodes():
-    """Find nodes stuck in calling/parsing, fetch their final state from Bland, and update them."""
-    import bland_client
+    """Find nodes stuck in calling/parsing, fetch their final state from the provider, and update them."""
     import transcript_parser
     from models import NodeStatus
+    from providers import get_provider
 
     recovered = 0
     import aiosqlite
@@ -146,12 +146,13 @@ async def recover_stuck_nodes():
         )
         stuck = await cursor.fetchall()
 
+    provider = get_provider()
     for node_id, call_id, session_id in stuck:
         try:
-            call_data = await bland_client.get_call(call_id)
-            call_status = call_data.get("status", "unknown")
-            transcript = call_data.get("concatenated_transcript", "") or ""
-            cost = call_data.get("price", 0.0) or 0.0
+            call_result = await provider.get_call(call_id)
+            call_status = call_result.status
+            transcript = call_result.transcript
+            cost = call_result.cost
 
             if call_status in ("completed", "failed", "busy", "no-answer", "canceled", "error"):
                 if transcript and len(transcript.strip()) > 20:
