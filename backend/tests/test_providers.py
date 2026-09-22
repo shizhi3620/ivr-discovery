@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -47,6 +48,43 @@ class FakeAudioProvider:
         path.write_bytes(b"RIFF-tts")
         self.synthesized.append((text, path))
         return path
+
+
+def fake_esl(captured: list[str], channel_id: str = "actual-call-id"):
+    """Simulate ESL while exposing the real channel UUID resolution path."""
+    state = {"marker": ""}
+
+    def run(command: str) -> str:
+        captured.append(command)
+        if command.startswith("bgapi originate"):
+            marker = command.split("ivr_discovery_call_id=", 1)[1].split(",", 1)[0]
+            state["marker"] = marker
+            return "+OK"
+        if command == "show channels as json":
+            return json.dumps(
+                {
+                    "rows": [
+                        {
+                            "uuid": channel_id,
+                            "call_uuid": channel_id,
+                            "direction": "outbound",
+                            "cid_num": state["marker"],
+                        }
+                    ]
+                }
+            )
+        if command.endswith(" ivr_discovery_call_id"):
+            return state["marker"]
+        if command.endswith(" callstate"):
+            return "ACTIVE"
+        if command.startswith("uuid_record "):
+            path = Path(command.split(" start ", 1)[1])
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"RIFF")
+            return "+OK"
+        return "+OK"
+
+    return run
 
 
 class TestCallResult:
@@ -183,21 +221,19 @@ class TestAndroidSimCapabilities:
         provider = AndroidSimGatewayProvider(config, audio_provider=FakeAudioProvider())
         captured: list[str] = []
 
-        def fake_run(command: str) -> str:
-            captured.append(command)
-            return "+OK"
-
-        with patch.object(provider, "_run_api", side_effect=fake_run), patch(
+        with patch.object(provider, "_run_api", side_effect=fake_esl(captured)), patch(
             "providers.android_sim_provider.asyncio.create_task"
         ):
             call_id = await provider.place_call("10010")
 
         originate = next(c for c in captured if "originate" in c)
+        assert "ivr_discovery_call_id=" in originate
         assert "sip_h_X-GSM-Destination=10010" in originate
         assert "user/gateway1@192.168.10.112" in originate
-        assert "execute_on_answer=record_session::" in originate
-        assert str(tmp_path / "recordings") in originate
-        assert call_id in originate
+        assert call_id == "actual-call-id"
+        recording = next(c for c in captured if c.startswith("uuid_record "))
+        assert str(tmp_path / "recordings") in recording
+        assert recording.endswith(".wav")
         assert provider.capabilities.transcript is True
         assert provider.capabilities.speech is True
 
@@ -218,11 +254,7 @@ class TestAndroidSimCapabilities:
         )
         captured: list[str] = []
 
-        def fake_run(command: str) -> str:
-            captured.append(command)
-            return "+OK"
-
-        with patch.object(provider, "_run_api", side_effect=fake_run), patch(
+        with patch.object(provider, "_run_api", side_effect=fake_esl(captured)), patch(
             "providers.android_sim_provider.asyncio.create_task"
         ) as create_task:
             call_id = await provider.place_call("10010", voice_option="查询话费")
@@ -231,7 +263,7 @@ class TestAndroidSimCapabilities:
         create_task.assert_called_once()
         create_task.call_args.args[0].close()
 
-        with patch.object(provider, "_run_api", side_effect=fake_run):
+        with patch.object(provider, "_run_api", side_effect=fake_esl(captured)):
             await provider._play_voice_after_answer(call_id, audio.synthesized[0][1])
         assert any("uuid_broadcast" in command for command in captured)
 

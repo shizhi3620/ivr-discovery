@@ -103,7 +103,7 @@ sequenceDiagram
 
     U->>D: start_discovery(phone_number)
     D->>T: place_call(phone_number)
-    T->>F: ESL originate + record_session
+    T->>F: ESL originate + uuid_record
     F->>P: GSM/VoLTE outbound call
     P-->>F: IVR audio
     opt navigate branch

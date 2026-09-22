@@ -81,14 +81,15 @@ Android 网关使用 PJSIP，必须关闭 SRTP 才能与本机的明文 RTP 互�
 
 ## 后端外呼录音与 ASR
 
-后端默认通过 FreeSWITCH ESL 发起外呼，并在接通时执行：
+后端默认通过 FreeSWITCH ESL 直接外呼 Android 网关，并在解析到真实 channel UUID 后执行：
 
 ```text
-execute_on_answer=record_session::/tmp/ivr-discovery-recordings/<call-id>.wav
-RECORD_STEREO=true
+uuid_record <channel-uuid> start /tmp/ivr-discovery-recordings/<channel-uuid>.wav
 ```
 
-因此运行后端的用户必须对 `CALL_RECORDING_DIR` 有写权限。默认目录是
+FreeSWITCH 必须加载 `mod_sndfile`，否则录音命令不会生成 WAV。本仓库的
+`conf/autoload_configs/modules.conf.xml` 已显式加载该模块。运行后端的用户必须对
+`CALL_RECORDING_DIR` 有写权限。默认目录是
 `/tmp/ivr-discovery-recordings`，可通过 `backend/.env` 覆盖；不要使用包含空格、
 逗号、花括号或引号的路径，这些字符会破坏 FreeSWITCH originate 变量解析。
 

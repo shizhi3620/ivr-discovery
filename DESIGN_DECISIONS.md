@@ -231,13 +231,15 @@ Key architectural and design decisions made during implementation, with alternat
 
 ---
 
-## 18. Call Recording: FreeSWITCH `record_session` vs Post-Answer `uuid_record`
+## 18. Call Recording: Direct Gateway Leg + `uuid_record`
 
-**Chosen**: Start `record_session` via `execute_on_answer` during `originate`, with `RECORD_STEREO=true`.
+**Chosen**: Keep the verified direct `originate user/gateway1` path, resolve its real channel UUID, then start `uuid_record` on that gateway leg with `RECORD_STEREO=true`.
 
 **Alternatives considered**:
 
-- **Poll then call `uuid_record` after answer**: risks missing the first seconds of the IVR greeting while waiting for state detection.
+- **A-leg `execute_on_answer=record_session` with `&park()`**: attached the recorder to the wrong API-originated leg.
+- **B-leg `origination_execute_on_answer`**: not supported by the deployed FreeSWITCH build.
+- **Loopback + dialplan `record_session`**: added another routing layer and did not solve channel correlation.
 - **Record only on the phone**: the upstream Android gateway does not provide a stable per-call recording contract.
 
-**Why `record_session` wins**: recording starts at answer, preserves the IVR greeting, and leaves one deterministic WAV per provider call id for Tencent file ASR.
+**Why direct `uuid_record` wins**: it records the same gateway leg that already carries DTMF and GSM audio, and channel resolution can be verified through ESL. The missing WAV encoder was the real blocker: Homebrew FreeSWITCH did not load `mod_sndfile`, so `record_session`/`uuid_record` silently produced no file until that module was enabled.

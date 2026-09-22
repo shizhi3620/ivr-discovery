@@ -59,6 +59,10 @@ class GatewayConfig:
     dtmf_key_gap: float = 2.0
     # FreeSWITCH writes one WAV per call into this directory.
     recording_dir: str = "/tmp/ivr-discovery-recordings"
+    # Wait briefly for bgapi originate to create a visible channel.
+    channel_lookup_timeout: float = 10.0
+    # Wait this long for the gateway leg to accept uuid_record.
+    recording_start_timeout: float = 30.0
     # Wait briefly for FreeSWITCH to finish flushing the WAV after hangup.
     recording_finalize_timeout: float = 5.0
 
@@ -76,6 +80,12 @@ class GatewayConfig:
             gateway_extension=source.get("SIP_GATEWAY_EXTENSION", "gateway1"),
             caller_extension=source.get("SIP_SOFTPHONE_EXTENSION", "softphone"),
             recording_dir=source.get("CALL_RECORDING_DIR", "/tmp/ivr-discovery-recordings"),
+            channel_lookup_timeout=float(
+                source.get("CALL_CHANNEL_LOOKUP_TIMEOUT", "10")
+            ),
+            recording_start_timeout=float(
+                source.get("CALL_RECORDING_START_TIMEOUT", "30")
+            ),
             recording_finalize_timeout=float(
                 source.get("CALL_RECORDING_FINALIZE_TIMEOUT", "5")
             ),
@@ -157,14 +167,13 @@ class AndroidSimGatewayProvider:
                 "use dtmf_sequence or voice_option"
             )
 
-        call_id = str(uuid_lib.uuid4())
+        correlation_id = str(uuid_lib.uuid4())
         dest = phone_number.strip()
         if not dest:
             raise ValueError("phone_number is required")
 
-        recording_path = self._recording_path(call_id)
-        self._validate_recording_path(recording_path)
-        await asyncio.to_thread(recording_path.parent.mkdir, parents=True, exist_ok=True)
+        recording_dir = Path(self.config.recording_dir)
+        await asyncio.to_thread(recording_dir.mkdir, parents=True, exist_ok=True)
 
         voice_prompt_path: Path | None = None
         if voice_option:
@@ -173,24 +182,31 @@ class AndroidSimGatewayProvider:
                     "Android SIM gateway cannot speak voice options because "
                     "Tencent TTS is not configured"
                 )
-            voice_prompt_path = recording_path.with_name(f"{call_id}-prompt.wav")
+            voice_prompt_path = recording_dir / f"{correlation_id}-prompt.wav"
             await self.audio_provider.synthesize(voice_option, voice_prompt_path)
             self._validate_recording_path(voice_prompt_path)
 
         originate = (
             "originate "
             "{"
-            f"origination_uuid={call_id},"
-            f"origination_caller_id_number={self.config.caller_extension},"
+            f"ivr_discovery_call_id={correlation_id},"
+            f"origination_caller_id_number={correlation_id},"
             "ignore_early_media=true,"
             "RECORD_STEREO=true,"
-            f"execute_on_answer=record_session::{recording_path},"
             f"sip_h_X-GSM-Destination={dest}"
             f"}}user/{self.config.gateway_extension}@{self.config.domain} "
             "&park()"
         )
 
         await asyncio.to_thread(self._run_api, f"bgapi {originate}")
+        call_id = await self._find_channel(correlation_id)
+        recording_path = self._recording_path(call_id)
+        self._validate_recording_path(recording_path)
+        try:
+            await self._start_recording(call_id, recording_path)
+        except EslError:
+            await self.stop_call(call_id)
+            raise
 
         # Enforce max_duration: schedule a hangup so a parked call cannot live forever.
         schedule = f"sched_api +{int(max_duration)} {call_id} uuid_kill {call_id}"
@@ -290,6 +306,104 @@ class AndroidSimGatewayProvider:
                 logger.warning("Failed to send DTMF %s on %s: %s", key, call_id, exc)
                 return
 
+    async def _find_channel(self, correlation_id: str) -> str:
+        """Resolve the dialplan leg using our unique outbound caller id."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.config.channel_lookup_timeout
+        last_error: EslError | None = None
+
+        while loop.time() < deadline:
+            try:
+                payload = await asyncio.to_thread(
+                    self._run_api,
+                    "show channels as json",
+                )
+                rows = self._channel_rows(payload)
+                candidates = [
+                    row
+                    for row in rows
+                    if str(row.get("cid_num")) == correlation_id
+                ]
+                if not candidates:
+                    candidates = await self._channels_with_marker(
+                        rows,
+                        correlation_id,
+                    )
+                if candidates:
+                    preferred = next(
+                        (
+                            row
+                            for row in candidates
+                            if str(row.get("direction")) == "inbound"
+                        ),
+                        candidates[0],
+                    )
+                    channel_id = str(preferred.get("uuid", ""))
+                    if not channel_id:
+                        continue
+                    logger.info(
+                        "Resolved correlation id %s to channel %s",
+                        correlation_id,
+                        channel_id,
+                    )
+                    return channel_id
+            except EslError as exc:
+                last_error = exc
+            await asyncio.sleep(0.1)
+
+        raise EslError(
+            f"Could not find originated channel for {correlation_id}: {last_error}"
+        )
+
+    async def _channels_with_marker(
+        self,
+        rows: list[dict],
+        correlation_id: str,
+    ) -> list[dict]:
+        """Compatibility fallback for endpoints that propagate custom variables."""
+        candidates: list[dict] = []
+        for row in rows:
+            channel_id = str(row.get("uuid", ""))
+            if not channel_id:
+                continue
+            try:
+                marker = await asyncio.to_thread(
+                    self._run_api,
+                    f"uuid_getvar {channel_id} ivr_discovery_call_id",
+                )
+            except EslError:
+                continue
+            if marker.strip() == correlation_id:
+                candidates.append(row)
+        return candidates
+
+    async def _start_recording(self, call_id: str, path: Path) -> None:
+        """Attach the WAV recorder once the gateway leg is media-ready."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.config.recording_start_timeout
+        last_error: EslError | None = None
+        while loop.time() < deadline:
+            if path.is_file():
+                logger.info("Recording already active for call %s -> %s", call_id, path)
+                return
+            try:
+                await asyncio.to_thread(
+                    self._run_api,
+                    f"uuid_record {call_id} start {path}",
+                )
+                for _ in range(10):
+                    if path.is_file():
+                        logger.info("Started recording call %s -> %s", call_id, path)
+                        return
+                    await asyncio.sleep(0.1)
+            except EslError as exc:
+                last_error = exc
+            await asyncio.sleep(0.2)
+
+        raise EslError(
+            f"Could not start recording for {call_id}: {last_error}"
+        )
+
     async def _play_voice_after_answer(self, call_id: str, path: Path) -> None:
         """Play a synthesized option phrase on the caller leg."""
         await asyncio.sleep(self.config.dtmf_initial_delay)
@@ -371,18 +485,31 @@ class AndroidSimGatewayProvider:
         array contains one entry per channel. We avoid a hard dependency on the
         exact shape by falling back to a substring check.
         """
+        channel_ids = AndroidSimGatewayProvider._channel_ids(channels_payload)
+        if channel_ids:
+            return call_id in channel_ids
+        return call_id in channels_payload
+
+    @staticmethod
+    def _channel_ids(channels_payload: str) -> list[str]:
+        """Extract channel UUIDs from FreeSWITCH's JSON channel listing."""
+        return [
+            str(row.get("uuid"))
+            for row in AndroidSimGatewayProvider._channel_rows(channels_payload)
+            if row.get("uuid")
+        ]
+
+    @staticmethod
+    def _channel_rows(channels_payload: str) -> list[dict]:
+        """Parse FreeSWITCH's JSON channel listing into row dictionaries."""
         import json
 
         try:
             data = json.loads(channels_payload)
         except (ValueError, TypeError):
-            return call_id in channels_payload
+            return []
 
         rows = data.get("rows") if isinstance(data, dict) else None
-        if rows is None:
-            return call_id in channels_payload
-        for row in rows:
-            values = row.values() if isinstance(row, dict) else row
-            if any(str(v) == call_id for v in values):
-                return True
-        return False
+        if not isinstance(rows, list):
+            return []
+        return [row for row in rows if isinstance(row, dict)]

@@ -4,7 +4,7 @@ Android SIM 网关只承载蜂窝音频，不提供云端转写。中国大陆�
 
 ## Consequences
 
-- FreeSWITCH 在 `execute_on_answer` 时执行 `record_session`，并设置 `RECORD_STEREO=true`；ASR 默认按双声道 8k 电话音频识别。
+- 电话 Provider 直接外呼 Android 网关，解析真实 channel UUID 后执行 `uuid_record start`，并设置 `RECORD_STEREO=true`。FreeSWITCH 必须加载 `mod_sndfile`，否则 WAV 录音不会落盘。ASR 默认按双声道 8k 电话音频识别。
 - 腾讯云本地音频单文件上限为 5 MB，因此录音必须按单次外呼拆分并及时提交；当前实现使用文件 ASR，不是实时流式识别。
 - ASR 完成前节点保持 `calling`；完整转写通过一次 `live_transcript` 回调送出，不能把该事件理解为逐字流式结果。
 - Android 电话能力只有在 `TENCENTCLOUD_SECRET_ID` 和 `TENCENTCLOUD_SECRET_KEY` 存在时才声明可用；缺少凭证时发现流程拒绝拨号。
