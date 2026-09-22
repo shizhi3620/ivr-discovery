@@ -365,6 +365,26 @@ async def create_target_optimization_report(
     return {"report": report, "business_context": business_context}
 
 
+@app.post("/api/targets/{target_id}/budget-increase")
+async def increase_target_budget(target_id: str, payload: dict):
+    try:
+        budget = await db.increase_budget(
+            target_id=target_id,
+            discovery_window_id=payload.get("discovery_window_id"),
+            new_target_limit=int(payload.get("new_target_limit")),
+            new_window_limit=(
+                int(payload["new_window_limit"])
+                if payload.get("new_window_limit") is not None
+                else None
+            ),
+            operator=str(payload.get("operator") or ""),
+            reason=str(payload.get("reason") or ""),
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"budget": budget}
+
+
 # Serve frontend static files in production (built by Dockerfile)
 STATIC_DIR = Path(__file__).parent / "static"
 if STATIC_DIR.exists():

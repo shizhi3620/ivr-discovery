@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timezone
 
 import aiosqlite
@@ -494,6 +495,101 @@ async def get_budget_summary(target_id: str, window_id: str | None = None) -> di
                 }
             )
         return payload
+
+
+async def increase_budget(
+    *,
+    target_id: str,
+    discovery_window_id: str | None,
+    new_target_limit: int,
+    new_window_limit: int | None,
+    operator: str,
+    reason: str,
+) -> dict:
+    """Increase cumulative limits with a mandatory audit record."""
+    if not operator.strip() or not reason.strip():
+        raise ValueError("operator and reason are required for budget increase")
+    if new_target_limit < 1:
+        raise ValueError("new target limit must be positive")
+    if new_window_limit is not None and new_window_limit < 1:
+        raise ValueError("new window limit must be positive")
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT total_budget_limit FROM targets WHERE id = ?",
+            (target_id,),
+        ) as cursor:
+            target = await cursor.fetchone()
+        if target is None:
+            await db.rollback()
+            raise ValueError("Target not found")
+        old_target_limit = target["total_budget_limit"]
+        if new_target_limit <= old_target_limit:
+            await db.rollback()
+            raise ValueError("new target limit must be greater than current limit")
+
+        old_window_limit = None
+        if discovery_window_id is not None:
+            async with db.execute(
+                """
+                SELECT budget_limit FROM discovery_windows
+                WHERE id = ? AND target_id = ?
+                """,
+                (discovery_window_id, target_id),
+            ) as cursor:
+                window = await cursor.fetchone()
+            if window is None:
+                await db.rollback()
+                raise ValueError("Discovery window not found")
+            old_window_limit = window["budget_limit"]
+            if new_window_limit is None:
+                await db.rollback()
+                raise ValueError("new window limit is required")
+            if new_window_limit <= old_window_limit:
+                await db.rollback()
+                raise ValueError(
+                    "new window limit must be greater than current limit"
+                )
+
+        created_at = datetime.now(timezone.utc).isoformat()
+        await db.execute(
+            "UPDATE targets SET total_budget_limit = ? WHERE id = ?",
+            (new_target_limit, target_id),
+        )
+        if discovery_window_id is not None:
+            await db.execute(
+                """
+                UPDATE discovery_windows
+                SET budget_limit = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (new_window_limit, created_at, discovery_window_id),
+            )
+        await db.execute(
+            """
+            INSERT INTO budget_increases
+                (id, target_id, discovery_window_id, old_target_limit,
+                 new_target_limit, old_window_limit, new_window_limit,
+                 operator, reason, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid.uuid4()),
+                target_id,
+                discovery_window_id,
+                old_target_limit,
+                new_target_limit,
+                old_window_limit,
+                new_window_limit,
+                operator.strip(),
+                reason.strip(),
+                created_at,
+            ),
+        )
+        await db.commit()
+        return await get_budget_summary(target_id, discovery_window_id)
 
 
 async def update_session(session_id: str, **kwargs):

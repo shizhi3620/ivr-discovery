@@ -188,6 +188,19 @@ CREATE TABLE IF NOT EXISTS call_attempts (
     UNIQUE(session_id, external_call_id)
 );
 
+CREATE TABLE IF NOT EXISTS budget_increases (
+    id TEXT PRIMARY KEY,
+    target_id TEXT NOT NULL REFERENCES targets(id),
+    discovery_window_id TEXT REFERENCES discovery_windows(id),
+    old_target_limit INTEGER NOT NULL,
+    new_target_limit INTEGER NOT NULL,
+    old_window_limit INTEGER,
+    new_window_limit INTEGER,
+    operator TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS nodes (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES sessions(id),

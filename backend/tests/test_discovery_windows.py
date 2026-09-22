@@ -143,6 +143,53 @@ async def test_counted_call_refuses_exhausted_window():
 
 
 @pytest.mark.asyncio
+async def test_budget_increase_requires_monotonic_audited_values():
+    target = Target(phone_number="4006668800", total_budget_limit=12)
+    await db.create_target(target)
+    window = DiscoveryWindow(
+        target_id=target.id,
+        route=RouteKind.SELF_SERVICE,
+        anchor_date="2026-09-22",
+        starts_at="2026-09-22T21:00:00+08:00",
+        ends_at="2026-09-23T09:00:00+08:00",
+        budget_limit=8,
+    )
+    await db.create_discovery_window(window)
+
+    budget = await db.increase_budget(
+        target_id=target.id,
+        discovery_window_id=window.id,
+        new_target_limit=14,
+        new_window_limit=10,
+        operator="jim",
+        reason="two calls were consumed by the timed-DTMF regression",
+    )
+    assert budget["target_limit"] == 14
+    assert budget["window_limit"] == 10
+
+    async with db.aiosqlite.connect(db.DB_PATH) as conn:
+        async with conn.execute(
+            """
+            SELECT old_target_limit, new_target_limit,
+                   old_window_limit, new_window_limit, operator
+            FROM budget_increases
+            """
+        ) as cursor:
+            rows = await cursor.fetchall()
+    assert rows == [(12, 14, 8, 10, "jim")]
+
+    with pytest.raises(ValueError, match="greater"):
+        await db.increase_budget(
+            target_id=target.id,
+            discovery_window_id=window.id,
+            new_target_limit=14,
+            new_window_limit=10,
+            operator="jim",
+            reason="not an increase",
+        )
+
+
+@pytest.mark.asyncio
 async def test_authorize_run_enforces_time_and_override():
     target = Target(phone_number="4006668800")
     await db.create_target(target)
