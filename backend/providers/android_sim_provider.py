@@ -19,6 +19,7 @@ import inspect
 import logging
 import os
 import uuid as uuid_lib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -64,6 +65,8 @@ class GatewayConfig:
     @classmethod
     def from_env(cls, env: dict | None = None) -> "GatewayConfig":
         source = env if env is not None else os.environ
+        if env is None:
+            source = _merge_local_gateway_env(source)
         esl = EslConfig.from_env(source)
         return cls(
             esl_host=esl.host,
@@ -77,6 +80,36 @@ class GatewayConfig:
                 source.get("CALL_RECORDING_FINALIZE_TIMEOUT", "5")
             ),
         )
+
+
+def _merge_local_gateway_env(source: Mapping[str, str]) -> dict[str, str]:
+    """Reuse the local FreeSWITCH harness config without duplicating secrets.
+
+    Production still supplies normal environment variables. The fallback only
+    applies when the backend and gateway are checked out together.
+    """
+    gateway_env = (
+        Path(__file__).resolve().parents[2]
+        / "gateway"
+        / "freeswitch"
+        / ".env.local"
+    )
+    if not gateway_env.is_file():
+        return dict(source)
+
+    from dotenv import dotenv_values
+
+    local = dotenv_values(gateway_env)
+    merged = dict(source)
+    aliases = {
+        "FREESWITCH_ESL_PASSWORD": "ESL_PASSWORD",
+        "FREESWITCH_ESL_PORT": "ESL_PORT",
+        "FREESWITCH_DOMAIN": "LAN_IP",
+    }
+    for target, alias in aliases.items():
+        if not merged.get(target) and local.get(alias):
+            merged[target] = str(local[alias])
+    return merged
 
 
 class AndroidSimGatewayProvider:

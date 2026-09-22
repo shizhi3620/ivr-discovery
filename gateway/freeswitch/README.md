@@ -25,6 +25,10 @@ cp .env.example .env.local
 - `ESL_PASSWORD`：本机 `fs_cli` 密码
 - `ESL_PORT`：默认 `18021`。避开 8021，因为本机代理常占用 8021
 
+当后端与网关在同一仓库内运行时，`backend/providers/android_sim_provider.py`
+会自动读取这里的 `ESL_PORT`、`ESL_PASSWORD` 和 `LAN_IP`，因此不需要在
+`backend/.env` 中重复保存 FreeSWITCH 密码。
+
 ## 启动
 
 ```bash
