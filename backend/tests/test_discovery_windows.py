@@ -178,7 +178,7 @@ async def test_budget_increase_requires_monotonic_audited_values():
             rows = await cursor.fetchall()
     assert rows == [(12, 14, 8, 10, "jim")]
 
-    with pytest.raises(ValueError, match="greater"):
+    with pytest.raises(ValueError, match="at least one"):
         await db.increase_budget(
             target_id=target.id,
             discovery_window_id=window.id,
@@ -187,6 +187,17 @@ async def test_budget_increase_requires_monotonic_audited_values():
             operator="jim",
             reason="not an increase",
         )
+
+    budget = await db.increase_budget(
+        target_id=target.id,
+        discovery_window_id=window.id,
+        new_target_limit=14,
+        new_window_limit=11,
+        operator="jim",
+        reason="window-only increase",
+    )
+    assert budget["target_limit"] == 14
+    assert budget["window_limit"] == 11
 
 
 @pytest.mark.asyncio

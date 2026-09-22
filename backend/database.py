@@ -526,9 +526,9 @@ async def increase_budget(
             await db.rollback()
             raise ValueError("Target not found")
         old_target_limit = target["total_budget_limit"]
-        if new_target_limit <= old_target_limit:
+        if new_target_limit < old_target_limit:
             await db.rollback()
-            raise ValueError("new target limit must be greater than current limit")
+            raise ValueError("new target limit cannot be lower than current limit")
 
         old_window_limit = None
         if discovery_window_id is not None:
@@ -547,11 +547,21 @@ async def increase_budget(
             if new_window_limit is None:
                 await db.rollback()
                 raise ValueError("new window limit is required")
-            if new_window_limit <= old_window_limit:
+            if new_window_limit < old_window_limit:
                 await db.rollback()
                 raise ValueError(
-                    "new window limit must be greater than current limit"
+                    "new window limit cannot be lower than current limit"
                 )
+
+        target_increased = new_target_limit > old_target_limit
+        window_increased = (
+            new_window_limit is not None
+            and old_window_limit is not None
+            and new_window_limit > old_window_limit
+        )
+        if not target_increased and not window_increased:
+            await db.rollback()
+            raise ValueError("at least one budget limit must increase")
 
         created_at = datetime.now(timezone.utc).isoformat()
         await db.execute(
