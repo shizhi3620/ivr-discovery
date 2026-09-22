@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<include>
+  <context name="default">
+
+    <extension name="softphone-to-gateway">
+      <condition field="destination_number" expression="^(10010)$">
+        <action application="set" data="hangup_after_bridge=true"/>
+        <action application="set" data="continue_on_fail=true"/>
+        <!-- Android PJSIP 从 CallInfo.localUri（To 头）读取 GSM 被叫号码，
+             因此 Request-URI 与 To 头都要覆盖为目标号码，桥接目标仍是 gateway1 的注册联系人。 -->
+        <action application="set" data="sip_h_X-GSM-Destination=${destination_number}"/>
+        <action application="bridge" data="user/gateway1@$${domain}"/>
+      </condition>
+    </extension>
+
+  </context>
+</include>

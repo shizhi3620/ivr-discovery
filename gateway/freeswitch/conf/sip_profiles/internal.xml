@@ -1,0 +1,41 @@
+<profile name="internal">
+  <domains>
+    <domain name="all" alias="true" parse="false"/>
+  </domains>
+
+  <settings>
+    <param name="debug" value="0"/>
+    <param name="sip-trace" value="no"/>
+    <param name="sip-capture" value="no"/>
+
+    <param name="context" value="default"/>
+    <param name="dialplan" value="XML"/>
+
+    <param name="sip-port" value="$${internal_sip_port}"/>
+    <param name="rtp-ip" value="$${local_ip_v4}"/>
+    <param name="rtp-start-port" value="$${rtp_start_port}"/>
+    <param name="rtp-end-port" value="$${rtp_end_port}"/>
+    <param name="sip-ip" value="$${local_ip_v4}"/>
+
+    <param name="inbound-codec-prefs" value="$${global_codec_prefs}"/>
+    <param name="outbound-codec-prefs" value="$${global_codec_prefs}"/>
+    <param name="rtp-timer-name" value="soft"/>
+
+    <param name="rfc2833-pt" value="101"/>
+    <param name="dtmf-type" value="rfc2833"/>
+    <param name="liberal-dtmf" value="true"/>
+    <param name="dtmf-duration" value="2000"/>
+
+    <param name="apply-inbound-acl" value="domains"/>
+    <param name="local-network-acl" value="localnet.auto"/>
+    <param name="auth-calls" value="true"/>
+    <param name="accept-blind-reg" value="false"/>
+    <param name="accept-blind-auth" value="false"/>
+
+    <param name="nat-options-ping" value="true"/>
+    <param name="aggressive-nat-detection" value="true"/>
+
+    <param name="enable-100rel" value="false"/>
+    <param name="enable-timer" value="false"/>
+  </settings>
+</profile>

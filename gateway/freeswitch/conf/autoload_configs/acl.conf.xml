@@ -1,0 +1,17 @@
+<configuration name="acl.conf" description="Network Lists">
+  <network-lists>
+    <list name="lan" default="allow">
+      <node type="deny" cidr="0.0.0.0/8"/>
+      <node type="deny" cidr="127.0.0.0/8"/>
+      <node type="allow" cidr="192.168.0.0/16"/>
+      <node type="allow" cidr="10.0.0.0/8"/>
+      <node type="allow" cidr="172.16.0.0/12"/>
+    </list>
+    <list name="domains" default="deny">
+      <node type="allow" cidr="LAN_IP_PLACEHOLDER/32"/>
+      <node type="allow" cidr="192.168.0.0/16"/>
+      <node type="allow" cidr="10.0.0.0/8"/>
+      <node type="allow" cidr="172.16.0.0/12"/>
+    </list>
+  </network-lists>
+</configuration>

@@ -1,0 +1,12 @@
+<include>
+  <user id="gateway1">
+    <params>
+      <param name="password" value="SIP_PASSWORD_PLACEHOLDER"/>
+    </params>
+    <variables>
+      <variable name="user_context" value="default"/>
+      <variable name="effective_caller_id_name" value="Android SIM Gateway"/>
+      <variable name="effective_caller_id_number" value="gateway1"/>
+    </variables>
+  </user>
+</include>
