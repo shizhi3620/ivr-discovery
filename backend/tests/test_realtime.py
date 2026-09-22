@@ -180,6 +180,9 @@ async def test_real_call_probe_selects_only_matching_terminal_event():
         silence_ms=800,
         menu_completion_ms=8000,
         no_speech_timeout_ms=30000,
+        observation_menu_completion_ms=12000,
+        observation_no_speech_timeout_ms=15000,
+        observation_timeout_ms=20000,
     )
     events: asyncio.Queue[dict] = asyncio.Queue()
     await events.put(

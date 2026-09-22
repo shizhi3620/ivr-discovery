@@ -42,6 +42,9 @@ class RealCallProbe:
         silence_ms: int,
         menu_completion_ms: int,
         no_speech_timeout_ms: int,
+        observation_menu_completion_ms: int,
+        observation_no_speech_timeout_ms: int,
+        observation_timeout_ms: int,
     ) -> None:
         self.provider = provider
         self.relay_base = relay_base.rstrip("/")
@@ -52,6 +55,9 @@ class RealCallProbe:
         self.silence_ms = silence_ms
         self.menu_completion_ms = menu_completion_ms
         self.no_speech_timeout_ms = no_speech_timeout_ms
+        self.observation_menu_completion_ms = observation_menu_completion_ms
+        self.observation_no_speech_timeout_ms = observation_no_speech_timeout_ms
+        self.observation_timeout_ms = observation_timeout_ms
 
     async def run(
         self,
@@ -72,7 +78,12 @@ class RealCallProbe:
                 max_duration=max_duration,
             )
             print("call_id", call_id, flush=True)
-            await self._start_stream(call_id)
+            await self._start_stream(
+                call_id,
+                target_key=self.target_key,
+                menu_completion_ms=self.menu_completion_ms,
+                no_speech_timeout_ms=self.no_speech_timeout_ms,
+            )
             stream_started = True
             terminal = await asyncio.wait_for(
                 self._next_terminal_event(events, call_id),
@@ -95,9 +106,33 @@ class RealCallProbe:
             print("dtmf_inject", terminal["key"], dtmf_result, flush=True)
 
             # The decision engine stops after dtmf_ready. The audio stream is no
-            # longer needed; continue recording the resulting next-level menu.
+            # longer needed; start a fresh listen-only decision engine so a
+            # human transfer in the next node is still detected immediately.
             await self._stop_stream(call_id)
             stream_stopped = True
+            await asyncio.sleep(0.5)
+            await self._start_stream(
+                call_id,
+                target_key=None,
+                menu_completion_ms=self.observation_menu_completion_ms,
+                no_speech_timeout_ms=self.observation_no_speech_timeout_ms,
+            )
+            stream_started = True
+            stream_stopped = False
+            try:
+                observation = await asyncio.wait_for(
+                    self._next_terminal_event(events, call_id),
+                    timeout=self.observation_timeout_ms / 1000,
+                )
+            except TimeoutError:
+                observation = {"event_type": "observation_timeout"}
+            print(
+                "observation_event",
+                json.dumps(observation, ensure_ascii=False),
+                flush=True,
+            )
+
+            await self.provider.stop_call(call_id)
 
             result = await asyncio.wait_for(
                 self.provider.wait_for_call(call_id),
@@ -116,6 +151,7 @@ class RealCallProbe:
             return {
                 "call_id": call_id,
                 "terminal": terminal,
+                "observation": observation,
                 "status": result.status,
                 "transcript": result.transcript,
             }
@@ -145,20 +181,27 @@ class RealCallProbe:
                 print(json.dumps(event, ensure_ascii=False), flush=True)
                 await events.put(event)
 
-    async def _start_stream(self, call_id: str) -> None:
+    async def _start_stream(
+        self,
+        call_id: str,
+        *,
+        target_key: str | None,
+        menu_completion_ms: int,
+        no_speech_timeout_ms: int,
+    ) -> None:
         channels = 1 if self.mix_type in ("mono", "mixed") else 2
         metadata = json.dumps(
             {
                 "channel_uuid": call_id,
                 "exploration_call_id": str(uuid.uuid4()),
-                "target_key": self.target_key,
+                "target_key": target_key,
                 "encoding": self.encoding,
                 "sample_rate": 8000,
                 "channels": channels,
                 "remote_channel": 0,
                 "silence_ms": self.silence_ms,
-                "menu_completion_ms": self.menu_completion_ms,
-                "no_speech_timeout_ms": self.no_speech_timeout_ms,
+                "menu_completion_ms": menu_completion_ms,
+                "no_speech_timeout_ms": no_speech_timeout_ms,
                 "gain": self.gain,
             },
             separators=(",", ":"),
@@ -213,6 +256,13 @@ def main() -> None:
     parser.add_argument("--silence-ms", type=int, default=800)
     parser.add_argument("--menu-completion-ms", type=int, default=8000)
     parser.add_argument("--no-speech-timeout-ms", type=int, default=30000)
+    parser.add_argument("--observation-menu-completion-ms", type=int, default=12000)
+    parser.add_argument(
+        "--observation-no-speech-timeout-ms",
+        type=int,
+        default=15000,
+    )
+    parser.add_argument("--observation-timeout-ms", type=int, default=20000)
     parser.add_argument(
         "--confirm-real-call",
         action="store_true",
@@ -236,6 +286,9 @@ def main() -> None:
         silence_ms=args.silence_ms,
         menu_completion_ms=args.menu_completion_ms,
         no_speech_timeout_ms=args.no_speech_timeout_ms,
+        observation_menu_completion_ms=args.observation_menu_completion_ms,
+        observation_no_speech_timeout_ms=args.observation_no_speech_timeout_ms,
+        observation_timeout_ms=args.observation_timeout_ms,
     )
     asyncio.run(
         probe.run(
