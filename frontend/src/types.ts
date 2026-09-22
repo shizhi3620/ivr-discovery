@@ -31,6 +31,50 @@ export interface SessionInfo {
   failed_nodes: number;
 }
 
+export interface ReportTimeRoute {
+  window?: string;
+  behavior?: string;
+  evidence?: string;
+  confidence?: string;
+  recommendation?: string;
+}
+
+export interface ReportFlowNode {
+  node_id?: string;
+  path?: string;
+  prompt?: string;
+  options?: Array<{ key?: string; label?: string }>;
+  observation?: string;
+}
+
+export interface ReportIssue {
+  severity?: string;
+  node_id?: string;
+  finding?: string;
+  recommendation?: string;
+  expected_impact?: string;
+}
+
+export interface LocalizedOptimizationReport {
+  title: string;
+  executive_summary: string;
+  time_routing: ReportTimeRoute[];
+  current_flow: ReportFlowNode[];
+  issues: ReportIssue[];
+  proposed_flow: string;
+  metrics: string[];
+  validation_plan: string[];
+  unknown_items: string[];
+}
+
+export interface OptimizationReport {
+  zh: LocalizedOptimizationReport;
+  en: LocalizedOptimizationReport;
+  generated_at?: string;
+  phone_number?: string;
+  business_context?: string;
+}
+
 // WebSocket message types
 export type ServerMessage =
   | { type: 'connected'; session_id: string }

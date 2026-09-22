@@ -21,6 +21,7 @@ Automated IVR phone tree explorer. Enter an authorized phone number and the syst
 - **Handles edge cases**: dead ends, busy lines (retry with backoff), short transcripts, voice-based IVRs, compound DTMF paths (depth 2+)
 - **Session persistence** — refresh the page and your tree is restored from SQLite
 - **Cost tracking** — provider-reported call costs are displayed; the Android SIM path currently reports zero because carrier/SIM costs are not itemized
+- **Bilingual optimization report** — after a complete discovery run, generate a structured Chinese/English report with time-based routing, issues, recommendations, metrics and Markdown export
 
 ## Architecture
 

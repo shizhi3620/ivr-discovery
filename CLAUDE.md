@@ -30,6 +30,10 @@ Speech processing goes through `backend/audio/`; the Android SIM path requires
 Tencent Cloud credentials and records each call as WAV before submitting it to
 file-based ASR. See `docs/research/tencent-cloud-8k-asr-tts.md`.
 
+Completed sessions can generate a bilingual optimization report from
+`backend/report_generator.py`; the frontend exposes it through the
+`Optimization` tab. Reports are not generated until the session is complete.
+
 ## Key APIs
 - **Bland AI**: Docs at https://docs.bland.ai
   - `POST /v1/calls` — place a call with `task` (agent prompt) and `precall_dtmf_sequence` (navigate IVR)

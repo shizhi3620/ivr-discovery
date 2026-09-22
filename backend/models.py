@@ -88,4 +88,11 @@ CREATE TABLE IF NOT EXISTS edges (
     dtmf_key TEXT NOT NULL,
     label TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS optimization_reports (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id),
+    business_context TEXT NOT NULL DEFAULT '',
+    report_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """

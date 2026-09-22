@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
+
 import aiosqlite
 
 from models import SCHEMA_SQL, Session, Node, Edge
@@ -116,6 +119,45 @@ async def get_edges_by_session(session_id: str) -> list[Edge]:
             async for row in cursor:
                 edges.append(Edge(**dict(row)))
     return edges
+
+
+async def get_optimization_report(session_id: str) -> tuple[dict, str] | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT report_json, business_context FROM optimization_reports WHERE session_id = ?",
+            (session_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            return json.loads(row["report_json"]), row["business_context"]
+
+
+async def save_optimization_report(
+    session_id: str,
+    report: dict,
+    business_context: str = "",
+) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO optimization_reports
+                (session_id, business_context, report_json, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                business_context = excluded.business_context,
+                report_json = excluded.report_json,
+                created_at = excluded.created_at
+            """,
+            (
+                session_id,
+                business_context,
+                json.dumps(report, ensure_ascii=False),
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        await db.commit()
 
 
 async def delete_subtree(node_id: str) -> tuple[list[str], list[str]]:

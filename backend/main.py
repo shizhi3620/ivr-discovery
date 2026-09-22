@@ -3,7 +3,7 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 import database as db
 from discovery import run_discovery, rediscover_subtree
 from models import Session, SessionStatus
+from report_generator import ReportNotReadyError, generate_optimization_report
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -229,6 +230,38 @@ async def get_node(node_id: str):
     if not node:
         return {"error": "Not found"}
     return node.model_dump()
+
+
+@app.get("/api/sessions/{session_id}/optimization-report")
+async def get_optimization_report(session_id: str):
+    """Return the cached bilingual optimization report, if one exists."""
+    cached = await db.get_optimization_report(session_id)
+    if not cached:
+        return {"report": None, "business_context": ""}
+    report, business_context = cached
+    return {"report": report, "business_context": business_context}
+
+
+@app.post("/api/sessions/{session_id}/optimization-report")
+async def create_optimization_report(session_id: str, payload: dict | None = None):
+    """Generate and persist a bilingual optimization report."""
+    payload = payload or {}
+    business_context = str(payload.get("business_context") or "")
+    force = bool(payload.get("force", False))
+    try:
+        report = await generate_optimization_report(
+            session_id,
+            business_context=business_context,
+            force=force,
+        )
+    except ReportNotReadyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to generate optimization report")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"report": report, "business_context": business_context}
 
 
 # Serve frontend static files in production (built by Dockerfile)

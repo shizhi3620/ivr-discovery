@@ -1,9 +1,16 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useWebSocket } from './hooks/useWebSocket';
 import { Controls } from './components/Controls';
+import { ReportView } from './components/ReportView';
 import { TreeView } from './components/TreeView';
 import { NodeDetail } from './components/NodeDetail';
-import type { IVRNode, IVREdge, SessionInfo, ServerMessage } from './types';
+import type {
+  IVRNode,
+  IVREdge,
+  OptimizationReport,
+  SessionInfo,
+  ServerMessage,
+} from './types';
 
 // Stable WS session ID that survives HMR reloads
 const WS_ID = sessionStorage.getItem('ws_session_id') ?? crypto.randomUUID();
@@ -79,6 +86,11 @@ function App() {
   const [edges, setEdges] = useState<IVREdge[]>([]);
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [view, setView] = useState<'tree' | 'report'>('tree');
+  const [report, setReport] = useState<OptimizationReport | null>(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportError, setReportError] = useState<string | null>(null);
+  const [businessContext, setBusinessContext] = useState('');
 
   // Restore session from URL on mount
   useEffect(() => {
@@ -92,6 +104,11 @@ function App() {
             setSession(data.session);
             setNodes(data.nodes);
             setEdges(data.edges || []);
+            if (data.session.phone_number === '4006668800') {
+              setBusinessContext(
+                '21:00 之前进入人工坐席服务，21:00 之后进入 IVR 自助服务。请分别分析两个时段的流程和优化建议。'
+              );
+            }
           }
         })
         .catch((e) => console.error('Failed to restore session:', e));
@@ -162,6 +179,16 @@ function App() {
       setEdges([]);
       setSession(null);
       setSelectedNodeId(null);
+      setView('tree');
+      setReport(null);
+      setReportError(null);
+      if (phoneNumber === '4006668800') {
+        setBusinessContext(
+          '21:00 之前进入人工坐席服务，21:00 之后进入 IVR 自助服务。请分别分析两个时段的流程和优化建议。'
+        );
+      } else {
+        setBusinessContext('');
+      }
       sendMessage({ type: 'start_discovery', phone_number: phoneNumber });
     },
     [sendMessage]
@@ -176,8 +203,44 @@ function App() {
     setEdges([]);
     setSession(null);
     setSelectedNodeId(null);
+    setView('tree');
+    setReport(null);
+    setReportError(null);
     window.history.pushState(null, '', '/');
   }, []);
+
+  const handleGenerateReport = useCallback(
+    async (force = false) => {
+      if (!session?.id) return;
+      setReportLoading(true);
+      setReportError(null);
+      try {
+        const response = await fetch(
+          `/api/sessions/${session.id}/optimization-report`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              business_context: businessContext,
+              force,
+            }),
+          }
+        );
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || 'Report generation failed');
+        }
+        setReport(data.report);
+      } catch (error) {
+        setReportError(
+          error instanceof Error ? error.message : 'Report generation failed'
+        );
+      } finally {
+        setReportLoading(false);
+      }
+    },
+    [businessContext, session?.id]
+  );
 
   const handleRediscover = useCallback(
     (nodeId: string) => {
@@ -212,6 +275,35 @@ function App() {
             isRunning={isRunning}
             hasSession={hasSession}
           />
+          {hasSession && (
+            <div className="flex rounded-lg border border-gray-800 p-0.5">
+              <button
+                onClick={() => setView('tree')}
+                className={`px-3 py-1 text-xs rounded-md transition-colors ${
+                  view === 'tree'
+                    ? 'bg-gray-800 text-white'
+                    : 'text-gray-500 hover:text-gray-200'
+                }`}
+              >
+                Tree
+              </button>
+              <button
+                onClick={() => {
+                  setView('report');
+                  if (session?.status === 'completed' && !report && !reportLoading) {
+                    void handleGenerateReport(false);
+                  }
+                }}
+                className={`px-3 py-1 text-xs rounded-md transition-colors ${
+                  view === 'report'
+                    ? 'bg-gray-800 text-white'
+                    : 'text-gray-500 hover:text-gray-200'
+                }`}
+              >
+                Optimization
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-4">
@@ -235,7 +327,18 @@ function App() {
       {/* Tree + Detail Panel */}
       <main className="flex-1 flex overflow-hidden">
         <div className="flex-1 relative">
-          {hasSession ? (
+          {view === 'report' ? (
+            <ReportView
+              sessionId={session?.id ?? null}
+              report={report}
+              loading={reportLoading}
+              error={reportError}
+              canGenerate={session?.status === 'completed'}
+              businessContext={businessContext}
+              onBusinessContextChange={setBusinessContext}
+              onGenerate={(force) => void handleGenerateReport(force)}
+            />
+          ) : hasSession ? (
             <TreeView
               nodes={nodes}
               edges={edges}
@@ -250,7 +353,7 @@ function App() {
           )}
         </div>
 
-        {selectedNode && (
+        {view === 'tree' && selectedNode && (
           <NodeDetail
             node={selectedNode}
             edges={edges}

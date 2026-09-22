@@ -90,6 +90,14 @@ ASR completion.
 - `transcript_parser.py` consumes the provider boundary and owns JSON validation,
   deduplication and navigation-option filtering.
 
+### Optimization Report
+
+`backend/report_generator.py` reads the completed session tree, transcripts and
+business context, then asks the AI Provider for a structured bilingual report.
+Reports are cached in the `optimization_reports` SQLite table. Generation is
+blocked while a discovery session is still running so the final recommendations
+are always based on the complete tree.
+
 ## Call Lifecycle
 
 ```mermaid
