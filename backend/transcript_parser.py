@@ -26,6 +26,7 @@ IMPORTANT RULES:
 6. If the IVR asked for input that our agent can't provide (enter a number, record a message, provide account info, etc.) — return empty options and set prompt_text to describe what action is required (e.g. "Enter 10-digit fax number", "Record a message then press #")
 7. If no menu was presented, return an empty options array
 8. For conversational IVRs that say "you can say things like X, Y, or Z" — those ARE the menu options
+9. Include explicit end-call or opt-out choices (for example "结束通话") as terminal options; they are part of the call flow
 
 Return ONLY valid JSON:
 {
