@@ -217,6 +217,92 @@ async def test_after_hours_hold_prompt_is_not_human_boundary():
     assert events == []
 
 
+@pytest.mark.asyncio
+async def test_after_hours_hold_prompt_split_across_final_fragments_is_exempt():
+    events: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        events.append(event)
+
+    engine = RealtimeDecisionEngine(
+        channel_uuid="channel",
+        exploration_call_id="call",
+        target_key="1",
+        on_event=on_event,
+        menu_completion_ms=1000,
+        no_speech_timeout_ms=1000,
+    )
+    await engine.start()
+    # Realtime ASR commonly emits the after-hours sentence as several finals;
+    # the trailing 请稍等 must stay exempt when it inherits that context.
+    await engine.feed("已作为评估和培训客服人员", is_final=True)
+    await engine.feed("即改进客服中心技术质量之用", is_final=True)
+    await engine.feed("请稍等", is_final=True)
+    await asyncio.sleep(0.05)
+    await engine.close()
+
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_after_hours_exemption_does_not_mask_later_human_transfer():
+    events: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        events.append(event)
+
+    engine = RealtimeDecisionEngine(
+        channel_uuid="channel",
+        exploration_call_id="call",
+        target_key="1",
+        on_event=on_event,
+        menu_completion_ms=1000,
+        no_speech_timeout_ms=1000,
+    )
+    await engine.start()
+    await engine.feed(
+        "作为评估和培训客服人员，改进客服中心技术质量。请稍等。",
+        is_final=True,
+    )
+    await engine.feed("正在为您转接人工坐席", is_final=True)
+    await engine.close()
+
+    assert [event["event_type"] for event in events] == ["human_boundary"]
+
+
+@pytest.mark.asyncio
+async def test_after_hours_hold_prompt_partial_before_final_is_exempt():
+    events: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        events.append(event)
+
+    engine = RealtimeDecisionEngine(
+        channel_uuid="channel",
+        exploration_call_id="call",
+        target_key="1",
+        on_event=on_event,
+        menu_completion_ms=1000,
+        no_speech_timeout_ms=1000,
+    )
+    await engine.start()
+    # Realtime partials are cumulative revisions of the current sentence, so
+    # the hold phrase arrives attached to the earlier after-hours context.
+    await engine.feed("作为评估和培训客服人员改进客服中心技术质量之用", is_final=False)
+    await engine.feed(
+        "作为评估和培训客服人员，改进客服中心技术质量之用，请稍等",
+        is_final=False,
+    )
+    await engine.feed(
+        "作为评估和培训客服人员，改进客服中心技术质量之用，请稍等。",
+        is_final=True,
+    )
+    await asyncio.sleep(0.05)
+    await engine.close()
+
+    assert events == []
+
+
 def test_hold_remains_human_risk_outside_complete_after_hours_sentence():
     assert has_human_boundary("请稍等") is True
     assert has_human_boundary("当前排队人数较多，请稍等") is True

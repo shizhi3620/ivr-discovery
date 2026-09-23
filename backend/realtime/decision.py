@@ -128,6 +128,7 @@ class RealtimeDecisionEngine:
         self.allow_target_key_fallback = allow_target_key_fallback
         self._revision = 0
         self._final_text = ""
+        self._partial_text = ""
         self._seen_keys: set[str] = set()
         self._fallback_seen = False
         self._stopped = False
@@ -150,7 +151,19 @@ class RealtimeDecisionEngine:
             self._no_speech_task.cancel()
             self._no_speech_task = None
 
-        if has_human_boundary(text):
+        # Realtime ASR splits a single spoken sentence into several callbacks
+        # (partial revisions followed by finals). Accumulate committed finals
+        # plus the in-flight partial so context-dependent exemptions such as
+        # the after-hours hold message are matched across fragments instead of
+        # being evaluated on one fragment at a time.
+        if is_final:
+            self._final_text = f"{self._final_text} {text}".strip()
+            self._partial_text = ""
+        else:
+            self._partial_text = text
+        context = f"{self._final_text} {self._partial_text}".strip()
+
+        if has_human_boundary(context):
             await self._stop_with(
                 "human_boundary",
                 text=text,
@@ -165,7 +178,6 @@ class RealtimeDecisionEngine:
                 sorted(extract_dtmf_keys(text)),
                 self.target_key,
             )
-            self._final_text = f"{self._final_text} {text}".strip()
 
         keys = extract_dtmf_keys(text)
         fallback_ready = self._fallback_ready(text)
