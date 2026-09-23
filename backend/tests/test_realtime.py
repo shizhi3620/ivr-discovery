@@ -86,7 +86,7 @@ async def test_english_fallback_uses_partial_support_phrase_for_key_two():
         allow_target_key_fallback=True,
     )
     await engine.start()
-    await engine.feed("Welcome to English support", is_final=False)
+    await engine.feed("Export in English", is_final=False)
     await asyncio.sleep(0.05)
     await engine.close()
 

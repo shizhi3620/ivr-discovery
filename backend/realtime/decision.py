@@ -12,6 +12,7 @@ from realtime.corrections import apply_asr_corrections
 
 EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 HUMAN_BOUNDARY_PATTERNS = (
     "转人工",
@@ -227,10 +228,7 @@ class RealtimeDecisionEngine:
             self._fallback_seen = False
             return False
         lowered = text.lower()
-        self._fallback_seen = (
-            "english" in lowered
-            and ("support" in lowered or "technical" in lowered)
-        )
+        self._fallback_seen = "english" in lowered
         if self._fallback_seen:
             logger.info("Target key 2 accepted from English support phrase fallback")
         return self._fallback_seen
