@@ -32,7 +32,7 @@ HUMAN_BOUNDARY_PATTERNS = (
 )
 
 AFTER_HOURS_COMPLETE_PATTERN = re.compile(
-    r"作为评估和培训客服人员.{0,30}改进客服中心技术质量.{0,30}请稍等",
+    r"作为评估和培训客服人员.{0,30}?改进客服中心技术质量.{0,30}?请稍等",
     re.DOTALL,
 )
 
@@ -75,6 +75,12 @@ _DTMF_PATTERNS = (
     re.compile(r"press\s+([0-9*#])", re.IGNORECASE),
     re.compile(r"key\s+([0-9*#])", re.IGNORECASE),
 )
+
+# Realtime ASR may stream a long announcement as one cumulative sentence or as
+# several consecutive sentence fragments. Keep a bounded rolling window of the
+# most recent fragments so context-dependent rules still see their full
+# sentence without growing for the whole call.
+_MAX_CONTEXT_SEGMENTS = 80
 
 
 def extract_dtmf_keys(text: str) -> set[str]:
@@ -128,7 +134,8 @@ class RealtimeDecisionEngine:
         self.allow_target_key_fallback = allow_target_key_fallback
         self._revision = 0
         self._final_text = ""
-        self._partial_text = ""
+        self._context_segments: list[str] = []
+        self._last_segment_partial = False
         self._seen_keys: set[str] = set()
         self._fallback_seen = False
         self._stopped = False
@@ -151,27 +158,25 @@ class RealtimeDecisionEngine:
             self._no_speech_task.cancel()
             self._no_speech_task = None
 
-        # Realtime ASR splits a single spoken sentence into several callbacks
-        # (partial revisions followed by finals). Accumulate committed finals
-        # plus the in-flight partial so context-dependent exemptions such as
-        # the after-hours hold message are matched across fragments instead of
-        # being evaluated on one fragment at a time.
-        if is_final:
-            self._final_text = f"{self._final_text} {text}".strip()
-            self._partial_text = ""
-        else:
-            self._partial_text = text
-        context = f"{self._final_text} {self._partial_text}".strip()
+        # Realtime ASR delivers a single announcement as several callbacks.
+        # Merge partial revisions of the same sentence and keep earlier
+        # fragments so context-dependent exemptions such as the after-hours
+        # hold message are matched against the whole sentence instead of one
+        # fragment at a time.
+        self._remember_segment(text, is_final=is_final)
+        context = self._context_text()
 
         if has_human_boundary(context):
             await self._stop_with(
                 "human_boundary",
                 text=text,
+                context=context,
                 reason="strong human-service keyword",
             )
             return
 
         if is_final:
+            self._final_text = f"{self._final_text} {text}".strip()
             logger.info(
                 "ASR final: %r keys=%s target=%r",
                 text,
@@ -189,6 +194,30 @@ class RealtimeDecisionEngine:
             self._settle_task = asyncio.create_task(
                 self._settle_after_silence(self._revision)
             )
+
+    def _remember_segment(self, text: str, *, is_final: bool) -> None:
+        segments = self._context_segments
+        if is_final:
+            if self._last_segment_partial and segments:
+                segments[-1] = text
+            else:
+                segments.append(text)
+            self._last_segment_partial = False
+        else:
+            if (
+                self._last_segment_partial
+                and segments
+                and (text.startswith(segments[-1]) or segments[-1].startswith(text))
+            ):
+                segments[-1] = text
+            else:
+                segments.append(text)
+            self._last_segment_partial = True
+        if len(segments) > _MAX_CONTEXT_SEGMENTS:
+            del segments[: len(segments) - _MAX_CONTEXT_SEGMENTS]
+
+    def _context_text(self) -> str:
+        return " ".join(self._context_segments).strip()
 
     async def close(self) -> None:
         self._stopped = True

@@ -186,6 +186,7 @@ async def test_decision_stops_on_human_boundary():
             "exploration_call_id": "call",
             "event_type": "human_boundary",
             "text": "您的电话正在转人工，请稍等",
+            "context": "您的电话正在转人工，请稍等",
             "reason": "strong human-service keyword",
         }
     ]
@@ -286,8 +287,7 @@ async def test_after_hours_hold_prompt_partial_before_final_is_exempt():
         no_speech_timeout_ms=1000,
     )
     await engine.start()
-    # Realtime partials are cumulative revisions of the current sentence, so
-    # the hold phrase arrives attached to the earlier after-hours context.
+    # Same sentence streamed as growing partial revisions, then a final.
     await engine.feed("作为评估和培训客服人员改进客服中心技术质量之用", is_final=False)
     await engine.feed(
         "作为评估和培训客服人员，改进客服中心技术质量之用，请稍等",
@@ -303,6 +303,72 @@ async def test_after_hours_hold_prompt_partial_before_final_is_exempt():
     assert events == []
 
 
+@pytest.mark.asyncio
+async def test_after_hours_hold_prompt_streamed_as_separate_partials_is_exempt():
+    """Reproduce the real 4006668800 stream: each clause arrives as its own
+    partial sentence, so the trailing 请稍等 cannot be judged in isolation."""
+    events: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        events.append(event)
+
+    engine = RealtimeDecisionEngine(
+        channel_uuid="channel",
+        exploration_call_id="call",
+        target_key="1",
+        on_event=on_event,
+        menu_completion_ms=1000,
+        no_speech_timeout_ms=1000,
+    )
+    await engine.start()
+    streamed_clauses = [
+        "感谢您致电Apple。",
+        "为了给您提供最好的服务。",
+        "按照Apple隐私政策的规定，与本次通话相关的部分有限个人信息。",
+        "可能会在中国大陆境外存储和处理。",
+        "如果您同意，请按1。",
+        "如需结束本次通话。",
+        "感谢您致电Apple。普通话按1。",
+        "English, 您的通话将会被录音，已作为评估和培训客服人员。",
+        "改进客服中心技术质量之用。",
+        "请稍等。",
+    ]
+    for clause in streamed_clauses:
+        await engine.feed(clause, is_final=False)
+    await asyncio.sleep(0.05)
+    await engine.close()
+
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_separate_partials_still_stop_on_real_human_boundary():
+    events: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        events.append(event)
+
+    engine = RealtimeDecisionEngine(
+        channel_uuid="channel",
+        exploration_call_id="call",
+        target_key="1",
+        on_event=on_event,
+        menu_completion_ms=1000,
+        no_speech_timeout_ms=1000,
+    )
+    await engine.start()
+    for clause in [
+        "作为评估和培训客服人员。",
+        "改进客服中心技术质量之用。",
+        "请稍等。",
+        "您的电话正在转接人工坐席。",
+    ]:
+        await engine.feed(clause, is_final=False)
+    await engine.close()
+
+    assert [event["event_type"] for event in events] == ["human_boundary"]
+
+
 def test_hold_remains_human_risk_outside_complete_after_hours_sentence():
     assert has_human_boundary("请稍等") is True
     assert has_human_boundary("当前排队人数较多，请稍等") is True
@@ -312,6 +378,15 @@ def test_hold_remains_human_risk_outside_complete_after_hours_sentence():
     assert has_human_boundary(
         "作为评估和培训客服人员，改进客服中心技术质量。请稍等。正在转人工"
     ) is True
+    # A trailing hold after a genuine transfer must not be swallowed by the
+    # exemption window (regression: greedy .{0,30} masked 转接人工).
+    assert (
+        has_human_boundary(
+            "作为评估和培训客服人员。改进客服中心技术质量之用。请稍等。"
+            "您的电话正在转接人工坐席，请稍等。"
+        )
+        is True
+    )
 
 
 @pytest.mark.asyncio
