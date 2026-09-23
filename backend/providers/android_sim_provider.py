@@ -407,13 +407,24 @@ class AndroidSimGatewayProvider:
                 logger.info("Realtime sent DTMF %s on call %s", event["key"], call_id)
                 await asyncio.sleep(0.3)
 
-            # Observe the resulting node without sending another key. A human
-            # boundary stops immediately; a normal menu ends after silence.
+            # Observe the resulting node without sending another key. The
+            # known 1w1 Mandarin path may announce a hold message before a
+            # later prompt, so keep that observation open much longer.
+            long_mandarin_observation = keys == ["1", "1"]
+            observation_menu_ms = (
+                30000 if long_mandarin_observation else 12000
+            )
+            observation_no_speech_ms = (
+                30000 if long_mandarin_observation else 15000
+            )
+            observation_timeout = (
+                35 if long_mandarin_observation else 20
+            )
             await self._start_realtime_stream(
                 call_id,
                 target_key=None,
-                menu_completion_ms=12000,
-                no_speech_timeout_ms=15000,
+                menu_completion_ms=observation_menu_ms,
+                no_speech_timeout_ms=observation_no_speech_ms,
                 allow_target_key_fallback=False,
             )
             try:
@@ -427,10 +438,13 @@ class AndroidSimGatewayProvider:
                             "asr_error",
                         },
                     ),
-                    timeout=20,
+                    timeout=observation_timeout,
                 )
-            except TimeoutError:
-                observation = {"event_type": "observation_timeout"}
+            except Exception as exc:
+                observation = {
+                    "event_type": "observation_timeout",
+                    "error": str(exc),
+                }
             events.append(observation)
             await self._stop_realtime_stream(call_id)
             if observation.get("event_type") in (
