@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # A single cellular modem/SIM can carry only one active voice call.
 MAX_CONCURRENT_CALLS = max(1, int(os.getenv("MAX_CONCURRENT_CALLS", "1")))
-MAX_DEPTH = 3
+MAX_DEPTH = max(1, int(os.getenv("DISCOVERY_MAX_DEPTH", "5")))
 MIN_TRANSCRIPT_LENGTH = 20  # Retry if transcript is shorter than this
 ROOT_CALL_MAX_DURATION = max(1, int(os.getenv("ROOT_CALL_MAX_DURATION", "60")))
 BRANCH_CALL_MAX_DURATION = max(1, int(os.getenv("BRANCH_CALL_MAX_DURATION", "60")))

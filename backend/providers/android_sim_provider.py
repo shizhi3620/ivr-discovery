@@ -75,6 +75,11 @@ class GatewayConfig:
     # Shadow-judgment veto window; backend enforces the hangup deadline.
     boundary_cancel_window_ms: int = 1500
     automated_notice_extension_ms: int = 10000
+    # Deep-observation window for the node reached at the end of a DTMF path.
+    # Must be long enough to hear at least two rounds of IVR timeout reminders.
+    observation_menu_completion_ms: int = 90000
+    observation_no_speech_ms: int = 90000
+    observation_timeout: float = 95.0
 
     @classmethod
     def from_env(cls, env: dict | None = None) -> "GatewayConfig":
@@ -120,6 +125,15 @@ class GatewayConfig:
             ),
             automated_notice_extension_ms=int(
                 source.get("SHADOW_AUTOMATED_NOTICE_EXTENSION_MS", "10000")
+            ),
+            observation_menu_completion_ms=int(
+                source.get("CALL_OBSERVATION_MENU_COMPLETION_MS", "90000")
+            ),
+            observation_no_speech_ms=int(
+                source.get("CALL_OBSERVATION_NO_SPEECH_MS", "90000")
+            ),
+            observation_timeout=float(
+                source.get("CALL_OBSERVATION_TIMEOUT", "95")
             ),
         )
 
@@ -417,25 +431,21 @@ class AndroidSimGatewayProvider:
                 logger.info("Realtime sent DTMF %s on call %s", event["key"], call_id)
                 await asyncio.sleep(0.3)
 
-            # Observe the resulting node without sending another key. The
-            # known 1w1 Mandarin path may announce a hold message before a
-            # later prompt, so keep that observation open much longer.
-            long_mandarin_observation = keys == ["1", "1"]
-            observation_menu_ms = (
-                30000 if long_mandarin_observation else 12000
-            )
-            observation_no_speech_ms = (
-                30000 if long_mandarin_observation else 15000
-            )
-            observation_timeout = (
-                35 if long_mandarin_observation else 20
-            )
+            # Observe the resulting node without sending another key. Both the
+            # Mandarin and the English submenus may announce a hold/quality
+            # message, then a real menu, then repeated timeout reminders, so
+            # keep a long observation window and do not treat a hold phrase as
+            # a terminal human boundary during this phase.
+            observation_menu_ms = self.config.observation_menu_completion_ms
+            observation_no_speech_ms = self.config.observation_no_speech_ms
+            observation_timeout = self.config.observation_timeout
             await self._start_realtime_stream(
                 call_id,
                 target_key=None,
                 menu_completion_ms=observation_menu_ms,
                 no_speech_timeout_ms=observation_no_speech_ms,
                 allow_target_key_fallback=False,
+                hold_through_human_boundary=True,
             )
             try:
                 observation = await asyncio.wait_for(
@@ -485,6 +495,7 @@ class AndroidSimGatewayProvider:
         menu_completion_ms: int,
         no_speech_timeout_ms: int,
         allow_target_key_fallback: bool,
+        hold_through_human_boundary: bool = False,
     ) -> None:
         metadata = json.dumps(
             {
@@ -499,6 +510,7 @@ class AndroidSimGatewayProvider:
                 "menu_completion_ms": menu_completion_ms,
                 "no_speech_timeout_ms": no_speech_timeout_ms,
                 "allow_target_key_fallback": allow_target_key_fallback,
+                "hold_through_human_boundary": hold_through_human_boundary,
                 "boundary_cancel_window_ms": self.config.boundary_cancel_window_ms,
                 "automated_notice_extension_ms": (
                     self.config.automated_notice_extension_ms

@@ -29,7 +29,7 @@ IMPORTANT RULES:
 8. For conversational IVRs that say "you can say things like X, Y, or Z" — those ARE the menu options
 9. Include explicit end-call or opt-out choices (for example "结束通话") as terminal options; they are part of the call flow
 10. Preserve the IVR's original language in prompt_text and option labels. Do not translate English prompts into Chinese or Chinese prompts into English
-11. Set human_transfer to true when the call reaches a live agent, representative, queue, "please hold", or an equivalent human-service boundary
+11. Set human_transfer to true when the call reaches a live agent, representative, queue, "please hold", or an equivalent human-service boundary. However, if the IVR plays a hold/quality notice and THEN presents a real DTMF menu with explicit "press N" options, set human_transfer to false and extract those options instead (a hold announcement is not a terminal human boundary when a menu follows).
 
 Return ONLY valid JSON:
 {

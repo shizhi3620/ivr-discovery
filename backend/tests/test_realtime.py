@@ -836,3 +836,59 @@ async def test_shadow_verdict_event_carries_judged_context(tmp_path):
     verdicts = [e for e in events if e["event_type"] == "shadow_verdict"]
     assert verdicts, "expected a shadow_verdict event"
     assert verdicts[0]["context"] == "请稍等"
+
+
+@pytest.mark.asyncio
+async def test_observation_holds_through_human_boundary_until_no_speech():
+    """In deep-observation mode a hold/queue phrase must not end the stream."""
+    events: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        events.append(event)
+
+    engine = RealtimeDecisionEngine(
+        channel_uuid="channel",
+        exploration_call_id="call",
+        target_key=None,
+        on_event=on_event,
+        menu_completion_ms=60,
+        no_speech_timeout_ms=60,
+        hold_through_human_boundary=True,
+    )
+    await engine.start()
+    await engine.feed("请稍等。", is_final=True)
+    await asyncio.sleep(0.03)
+    # No terminal boundary from the hold phrase alone.
+    assert [e for e in events if e["event_type"] == "human_boundary"] == []
+
+    await asyncio.sleep(0.15)
+    assert events[-1]["event_type"] == "unknown_boundary"
+    await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_observation_captures_menu_after_hold_phrase():
+    """A real DTMF menu after a hold phrase is still parsed in observation mode."""
+    events: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        events.append(event)
+
+    engine = RealtimeDecisionEngine(
+        channel_uuid="channel",
+        exploration_call_id="call",
+        target_key=None,
+        on_event=on_event,
+        menu_completion_ms=40,
+        no_speech_timeout_ms=1000,
+        hold_through_human_boundary=True,
+    )
+    await engine.start()
+    await engine.feed("请稍等。", is_final=True)
+    await asyncio.sleep(0.02)
+    await engine.feed("Press one for billing, press two for technical support.", is_final=True)
+    await asyncio.sleep(0.15)
+    await engine.close()
+
+    assert [e for e in events if e["event_type"] == "human_boundary"] == []
+    assert any(e["event_type"] == "unknown_boundary" for e in events)

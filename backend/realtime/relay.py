@@ -137,6 +137,9 @@ class RealtimeRelay:
                     metadata.get("allow_target_key_fallback", False)
                 ),
                 shadow_judge=self.shadow_judge,
+                hold_through_human_boundary=bool(
+                    metadata.get("hold_through_human_boundary", False)
+                ),
             )
 
             async def on_asr_message(message: dict[str, Any]) -> None:

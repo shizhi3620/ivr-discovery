@@ -150,6 +150,7 @@ class RealtimeDecisionEngine:
         shadow_judge: Any = None,
         boundary_cancel_window_ms: int = DEFAULT_BOUNDARY_CANCEL_WINDOW_MS,
         automated_notice_extension_ms: int = DEFAULT_AUTOMATED_NOTICE_EXTENSION_MS,
+        hold_through_human_boundary: bool = False,
     ) -> None:
         self.channel_uuid = channel_uuid
         self.exploration_call_id = exploration_call_id
@@ -166,6 +167,9 @@ class RealtimeDecisionEngine:
         self.automated_notice_extension_seconds = max(
             0.0, automated_notice_extension_ms / 1000
         )
+        # Observation calls keep listening through hold/queue announcements,
+        # because an automated menu or a repeated timeout reminder may follow.
+        self.hold_through_human_boundary = hold_through_human_boundary
         self._revision = 0
         self._final_text = ""
         self._context_segments: list[tuple[str, float]] = []
@@ -239,6 +243,11 @@ class RealtimeDecisionEngine:
     # -- human boundary ------------------------------------------------------
 
     async def _handle_human_boundary(self, *, text: str, context: str) -> None:
+        if self.hold_through_human_boundary:
+            # Deep-observation mode: a hold/queue message is not terminal here.
+            # Keep the stream open so a following menu or timeout reminder is
+            # captured; the silence and no-speech timeouts still bound the call.
+            return
         if self._pending_boundary:
             return
         if not self.shadow_enabled:
@@ -331,14 +340,20 @@ class RealtimeDecisionEngine:
 
     async def close(self) -> None:
         self._stopped = True
-        for task in (
-            self._settle_task,
-            self._no_speech_task,
-            self._shadow_task,
-            self._pending_boundary_task,
-        ):
-            if task and not task.done():
-                task.cancel()
+        pending = [
+            task
+            for task in (
+                self._settle_task,
+                self._no_speech_task,
+                self._shadow_task,
+                self._pending_boundary_task,
+            )
+            if task and not task.done()
+        ]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def _settle_after_silence(
         self, revision: int, *, extra_delay: float = 0.0
