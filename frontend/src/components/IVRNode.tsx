@@ -69,6 +69,7 @@ export const IVRNodeComponent = memo(({ data }: NodeProps) => {
   const d = data as unknown as IVRNodeData;
   const isHuman = d.label.startsWith('[Human]');
   const isCycle = d.label.startsWith('(cycle)');
+  const isTimeout = d.label.startsWith('(timeout)');
   const cfg = isHuman
     ? {
         bg: 'bg-violet-950/70',
@@ -85,6 +86,14 @@ export const IVRNodeComponent = memo(({ data }: NodeProps) => {
         icon: '↻',
         accent: 'text-orange-400',
       }
+    : isTimeout
+    ? {
+        bg: 'bg-yellow-950/60',
+        border: 'border-yellow-600/50',
+        glow: '',
+        icon: '⏱',
+        accent: 'text-yellow-400',
+      }
     : STATUS_CONFIG[d.status];
   const showStatusBadge = d.status === 'calling' || d.status === 'parsing';
   const isPulsing = d.status === 'calling';
@@ -94,6 +103,8 @@ export const IVRNodeComponent = memo(({ data }: NodeProps) => {
     ? d.label.replace('[Human] ', '')
     : isCycle
     ? d.label.replace('(cycle) ', '')
+    : isTimeout
+    ? d.label.replace('(timeout) ', '')
     : d.label;
   const title =
     d.status === 'completed' || d.status === 'failed'
@@ -169,6 +180,13 @@ export const IVRNodeComponent = memo(({ data }: NodeProps) => {
           {isCycle && (
             <div className="mt-1.5 text-[10px] font-semibold tracking-wide uppercase text-orange-400">
               Cycle Detected
+            </div>
+          )}
+
+          {/* No-input timeout badge */}
+          {isTimeout && (
+            <div className="mt-1.5 text-[10px] font-semibold tracking-wide uppercase text-yellow-400">
+              No-input Timeout
             </div>
           )}
 

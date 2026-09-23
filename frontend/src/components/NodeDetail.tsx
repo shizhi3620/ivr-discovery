@@ -124,7 +124,12 @@ export function NodeDetail({ node, edges, allNodes, onClose, onRediscover }: Nod
         {parentEdge && (
           <Section title="Navigation">
             <div className="text-sm text-gray-300">
-              {parentEdge.dtmf_key.startsWith('say') ? (
+              {parentEdge.dtmf_key === 'no-input' ? (
+                <span>
+                  <span className="text-yellow-400">No key pressed</span>
+                  <span className="text-gray-500"> — {parentEdge.label}</span>
+                </span>
+              ) : parentEdge.dtmf_key.startsWith('say') ? (
                 <span>
                   Said <span className="text-indigo-400">"{parentEdge.label}"</span>
                 </span>
@@ -166,7 +171,11 @@ export function NodeDetail({ node, edges, allNodes, onClose, onRediscover }: Nod
                     className="flex items-center gap-2.5 py-1.5 px-2.5 rounded-lg bg-gray-900/50"
                   >
                     <span className="text-xs font-mono text-indigo-400 bg-indigo-500/10 px-1.5 py-0.5 rounded w-6 text-center shrink-0">
-                      {edge.dtmf_key.startsWith('say') ? 'V' : edge.dtmf_key}
+                      {edge.dtmf_key === 'no-input'
+                        ? '⏱'
+                        : edge.dtmf_key.startsWith('say')
+                        ? 'V'
+                        : edge.dtmf_key}
                     </span>
                     <span className="text-sm text-gray-300 flex-1 truncate">
                       {edge.label}

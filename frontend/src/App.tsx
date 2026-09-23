@@ -104,6 +104,23 @@ function App() {
   const snapshotRef = useRef<string>('');
   const pollTimer = useRef<ReturnType<typeof setInterval>>(undefined);
 
+  const loadCachedReport = useCallback(
+    (sessionId: string) => {
+      fetch(`/api/sessions/${sessionId}/optimization-report`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (data?.report) {
+            setReport(data.report);
+            if (data.business_context) setBusinessContext(data.business_context);
+          }
+        })
+        .catch(() => {
+          // No cached report yet; the user can generate one.
+        });
+    },
+    []
+  );
+
   // Restore a session on mount: from the URL, or the latest saved session on "/"
   useEffect(() => {
     const urlSessionId = getSessionIdFromUrl();
@@ -117,6 +134,7 @@ function App() {
       setNodes(data.nodes);
       setEdges(data.edges || []);
       snapshotRef.current = '';
+      loadCachedReport(data.session.id);
       if (data.session.phone_number === '4006668800') {
         setBusinessContext(
           '21:00 之前进入人工坐席服务，21:00 之后进入 IVR 自助服务。请分别分析两个时段的流程和优化建议。'
@@ -145,7 +163,7 @@ function App() {
         }
       })
       .catch((e) => console.error('Failed to load latest session:', e));
-  }, []);
+  }, [loadCachedReport]);
 
   const applySnapshot = useCallback(
     (data: {
@@ -380,7 +398,11 @@ function App() {
               <button
                 onClick={() => {
                   setView('report');
-                  if (session?.status === 'completed' && !report && !reportLoading) {
+                  if (
+                    (session?.status === 'completed' || session?.status === 'failed') &&
+                    !report &&
+                    !reportLoading
+                  ) {
                     void handleGenerateReport(false);
                   }
                 }}
@@ -423,7 +445,9 @@ function App() {
               report={report}
               loading={reportLoading}
               error={reportError}
-              canGenerate={session?.status === 'completed'}
+              canGenerate={
+                session?.status === 'completed' || session?.status === 'failed'
+              }
               businessContext={businessContext}
               onBusinessContextChange={setBusinessContext}
               onGenerate={(force) => void handleGenerateReport(force)}

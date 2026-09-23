@@ -318,8 +318,16 @@ async def get_node(node_id: str):
 
 @app.get("/api/sessions/{session_id}/optimization-report")
 async def get_optimization_report(session_id: str):
-    """Return the cached bilingual optimization report, if one exists."""
+    """Return the cached bilingual optimization report, if one exists.
+
+    Reports for a session that belongs to a target are stored against the
+    target, so fall back to that cache when the session has none of its own.
+    """
     cached = await db.get_optimization_report(session_id)
+    if not cached:
+        session = await db.get_session(session_id)
+        if session and session.target_id:
+            cached = await db.get_target_optimization_report(session.target_id)
     if not cached:
         return {"report": None, "business_context": ""}
     report, business_context = cached
