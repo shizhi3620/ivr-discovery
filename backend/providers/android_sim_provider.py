@@ -456,6 +456,7 @@ class AndroidSimGatewayProvider:
                             "unknown_boundary",
                             "technical_unknown",
                             "asr_error",
+                            "stream_stopped",
                         },
                     ),
                     timeout=observation_timeout,
