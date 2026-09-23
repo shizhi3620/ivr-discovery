@@ -342,6 +342,12 @@ class TestAndroidSimCapabilities:
             ]
         )
 
+        def next_event(*args, **kwargs):
+            event = next(events)
+            if isinstance(event, BaseException):
+                raise event
+            return event
+
         with patch.object(
             provider,
             "_start_realtime_stream",
@@ -353,7 +359,7 @@ class TestAndroidSimCapabilities:
         ), patch.object(
             provider,
             "_next_realtime_event",
-            new=AsyncMock(side_effect=lambda *args, **kwargs: next(events)),
+            new=AsyncMock(side_effect=next_event),
         ), patch.object(
             provider,
             "_run_api",
@@ -404,6 +410,59 @@ class TestAndroidSimCapabilities:
 
         assert provider._realtime_results["call-1"]["fault"] == "human_boundary"
         stop_call.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_timed_fallback_sends_second_key_for_known_1w2_path(self):
+        from providers.android_sim_provider import (
+            AndroidSimGatewayProvider,
+            GatewayConfig,
+        )
+
+        provider = AndroidSimGatewayProvider(
+            GatewayConfig(dtmf_fallback_delay_ms=1),
+            audio_provider=FakeAudioProvider(),
+        )
+        commands: list[str] = []
+        events = iter(
+            [
+                {"event_type": "dtmf_ready", "key": "1"},
+                TimeoutError(),
+                {"event_type": "unknown_boundary"},
+            ]
+        )
+
+        def next_event(*args, **kwargs):
+            event = next(events)
+            if isinstance(event, BaseException):
+                raise event
+            return event
+
+        with patch.object(
+            provider,
+            "_start_realtime_stream",
+            new=AsyncMock(),
+        ), patch.object(
+            provider,
+            "_stop_realtime_stream",
+            new=AsyncMock(),
+        ), patch.object(
+            provider,
+            "_next_realtime_event",
+            new=AsyncMock(side_effect=next_event),
+        ), patch.object(
+            provider,
+            "_run_api",
+            side_effect=lambda command: commands.append(command) or "+OK",
+        ), patch.object(
+            provider,
+            "stop_call",
+            new=AsyncMock(),
+        ):
+            await provider._navigate_realtime("call-fallback", "1w2")
+
+        assert any("uuid_send_dtmf call-fallback 1" in c for c in commands)
+        assert any("uuid_send_dtmf call-fallback 2" in c for c in commands)
+        assert provider._realtime_results["call-fallback"]["fault"] == ""
 
 
 class TestEslBodyExtraction:

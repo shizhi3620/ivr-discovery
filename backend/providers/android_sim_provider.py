@@ -62,6 +62,7 @@ class GatewayConfig:
     dtmf_key_gap: float = 2.0
     realtime_relay_url: str = "ws://127.0.0.1:18031"
     realtime_dtmf_enabled: bool = True
+    dtmf_fallback_delay_ms: int = 16000
     # FreeSWITCH writes one WAV per call into this directory.
     recording_dir: str = "/tmp/ivr-discovery-recordings"
     # Wait briefly for bgapi originate to create a visible channel.
@@ -97,6 +98,9 @@ class GatewayConfig:
                 "1",
             ).lower()
             in ("1", "true", "yes"),
+            dtmf_fallback_delay_ms=int(
+                source.get("CALL_DTMF_FALLBACK_DELAY_MS", "16000")
+            ),
             recording_dir=source.get("CALL_RECORDING_DIR", "/tmp/ivr-discovery-recordings"),
             channel_lookup_timeout=float(
                 source.get("CALL_CHANNEL_LOOKUP_TIMEOUT", "10")
@@ -342,7 +346,7 @@ class AndroidSimGatewayProvider:
         events: list[dict] = []
         fault = ""
         try:
-            for key in keys:
+            for key_index, key in enumerate(keys):
                 await self._start_realtime_stream(
                     call_id,
                     target_key=key,
@@ -350,22 +354,49 @@ class AndroidSimGatewayProvider:
                     no_speech_timeout_ms=30000,
                     allow_target_key_fallback=(key == "2"),
                 )
-                event = await asyncio.wait_for(
-                    self._next_realtime_event(
-                        call_id,
-                        terminal_types={
-                            "dtmf_ready",
-                            "human_boundary",
-                            "unknown_boundary",
-                            "technical_unknown",
-                            "asr_error",
-                        },
-                    ),
-                    timeout=35,
+                terminal_types = {
+                    "dtmf_ready",
+                    "human_boundary",
+                    "unknown_boundary",
+                    "technical_unknown",
+                    "asr_error",
+                }
+                event = None
+                fallback_for_key = (
+                    key == "2"
+                    and key_index == 1
+                    and keys[0] == "1"
                 )
+                timeout = (
+                    self.config.dtmf_fallback_delay_ms / 1000
+                    if fallback_for_key
+                    else 35
+                )
+                try:
+                    event = await asyncio.wait_for(
+                        self._next_realtime_event(
+                            call_id,
+                            terminal_types=terminal_types,
+                        ),
+                        timeout=timeout,
+                    )
+                except TimeoutError:
+                    if not fallback_for_key:
+                        raise
+                    logger.warning(
+                        "Timed DTMF fallback for known 1w2 path after %d ms",
+                        self.config.dtmf_fallback_delay_ms,
+                    )
+                    event = {
+                        "event_type": "timed_fallback",
+                        "key": key,
+                    }
                 events.append(event)
                 await self._stop_realtime_stream(call_id)
-                if event.get("event_type") != "dtmf_ready":
+                if event.get("event_type") not in (
+                    "dtmf_ready",
+                    "timed_fallback",
+                ):
                     fault = str(event.get("event_type") or "realtime navigation failed")
                     await self.stop_call(call_id)
                     return
