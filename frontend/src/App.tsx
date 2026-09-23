@@ -100,27 +100,46 @@ function App() {
   const [reportError, setReportError] = useState<string | null>(null);
   const [businessContext, setBusinessContext] = useState('');
 
-  // Restore session from URL on mount
+  // Restore a session on mount: from the URL, or the latest saved session on "/"
   useEffect(() => {
     const urlSessionId = getSessionIdFromUrl();
+    const restore = (data: {
+      session?: SessionInfo;
+      nodes?: IVRNode[];
+      edges?: IVREdge[];
+    }) => {
+      if (!data.session || !data.nodes || data.nodes.length === 0) return;
+      setSession(data.session);
+      setNodes(data.nodes);
+      setEdges(data.edges || []);
+      if (data.session.phone_number === '4006668800') {
+        setBusinessContext(
+          '21:00 之前进入人工坐席服务，21:00 之后进入 IVR 自助服务。请分别分析两个时段的流程和优化建议。'
+        );
+      }
+    };
+
     if (urlSessionId) {
       fetch(`/api/recover-stuck`)
         .then(() => fetch(`/api/sessions/${urlSessionId}`))
         .then((r) => r.json())
-        .then((data) => {
-          if (data.session && data.nodes?.length > 0) {
-            setSession(data.session);
-            setNodes(data.nodes);
-            setEdges(data.edges || []);
-            if (data.session.phone_number === '4006668800') {
-              setBusinessContext(
-                '21:00 之前进入人工坐席服务，21:00 之后进入 IVR 自助服务。请分别分析两个时段的流程和优化建议。'
-              );
-            }
-          }
-        })
+        .then(restore)
         .catch((e) => console.error('Failed to restore session:', e));
+      return;
     }
+
+    // No session in the URL: show the most recent saved session so a reload
+    // never lands on an empty page while the backend still has data.
+    fetch('/api/sessions/latest')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data) return;
+        restore(data);
+        if (data.session?.id) {
+          window.history.replaceState(null, '', `/${data.session.id}`);
+        }
+      })
+      .catch((e) => console.error('Failed to load latest session:', e));
   }, []);
 
   useEffect(() => {
