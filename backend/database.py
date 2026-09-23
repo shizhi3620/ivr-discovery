@@ -919,3 +919,35 @@ async def delete_subtree(node_id: str) -> tuple[list[str], list[str]]:
         await db.commit()
 
     return deleted_node_ids, deleted_edge_ids
+
+
+async def delete_all_nodes_by_session(session_id: str) -> tuple[list[str], list[str]]:
+    """Delete every node and edge belonging to a session's tree.
+
+    Returns (deleted_node_ids, deleted_edge_ids). Used when a route's tree is
+    reconstructed from reused evidence and the previous partial tree (including
+    parser artefacts) must not linger.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT id FROM nodes WHERE session_id = ?", (session_id,)
+        ) as cursor:
+            node_ids = [row[0] for row in await cursor.fetchall()]
+
+        edge_ids: list[str] = []
+        if node_ids:
+            placeholders = ",".join("?" * len(node_ids))
+            async with db.execute(
+                f"SELECT id FROM edges WHERE from_node_id IN ({placeholders})",
+                node_ids,
+            ) as cursor:
+                edge_ids = [row[0] for row in await cursor.fetchall()]
+            await db.execute(
+                f"DELETE FROM edges WHERE from_node_id IN ({placeholders})",
+                node_ids,
+            )
+            await db.execute(
+                f"DELETE FROM nodes WHERE id IN ({placeholders})", node_ids
+            )
+        await db.commit()
+    return node_ids, edge_ids

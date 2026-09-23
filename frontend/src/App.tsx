@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useWebSocket } from './hooks/useWebSocket';
 import { Controls } from './components/Controls';
 import { ReportView } from './components/ReportView';
@@ -99,6 +99,10 @@ function App() {
   const [reportLoading, setReportLoading] = useState(false);
   const [reportError, setReportError] = useState<string | null>(null);
   const [businessContext, setBusinessContext] = useState('');
+  // Signature of the last server snapshot we rendered, so background polling
+  // only touches React state when something actually changed.
+  const snapshotRef = useRef<string>('');
+  const pollTimer = useRef<ReturnType<typeof setInterval>>(undefined);
 
   // Restore a session on mount: from the URL, or the latest saved session on "/"
   useEffect(() => {
@@ -112,6 +116,7 @@ function App() {
       setSession(data.session);
       setNodes(data.nodes);
       setEdges(data.edges || []);
+      snapshotRef.current = '';
       if (data.session.phone_number === '4006668800') {
         setBusinessContext(
           '21:00 之前进入人工坐席服务，21:00 之后进入 IVR 自助服务。请分别分析两个时段的流程和优化建议。'
@@ -141,6 +146,54 @@ function App() {
       })
       .catch((e) => console.error('Failed to load latest session:', e));
   }, []);
+
+  const applySnapshot = useCallback(
+    (data: {
+      session?: SessionInfo;
+      nodes?: IVRNode[];
+      edges?: IVREdge[];
+    }): boolean => {
+      if (!data.session || !data.nodes || data.nodes.length === 0) return false;
+      const signature = JSON.stringify([
+        data.session.status,
+        data.session.total_nodes,
+        data.session.completed_nodes,
+        data.session.failed_nodes,
+        data.session.budget ?? null,
+        data.nodes.map((n) => [n.id, n.status, n.prompt_text, n.parent_id, n.dtmf_path]),
+      ]);
+      if (signature === snapshotRef.current) return false;
+      snapshotRef.current = signature;
+      setSession(data.session);
+      setNodes(data.nodes);
+      setEdges(data.edges || []);
+      return true;
+    },
+    []
+  );
+
+  // Live refresh: the backend WebSocket only streams events to the connection
+  // that started a run. Changes made by the rebuild scripts, another browser,
+  // or a run started elsewhere would otherwise not appear until a manual
+  // reload, so poll the saved session and apply snapshots when they change.
+  useEffect(() => {
+    clearInterval(pollTimer.current);
+    const sessionId = session?.id;
+    if (!sessionId) return;
+
+    const poll = () => {
+      fetch(`/api/sessions/${sessionId}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (data) applySnapshot(data);
+        })
+        .catch(() => {
+          // Transient failures are fine; the next tick retries.
+        });
+    };
+    pollTimer.current = setInterval(poll, 3000);
+    return () => clearInterval(pollTimer.current);
+  }, [session?.id, applySnapshot]);
 
   useEffect(() => {
     onMessage((msg: ServerMessage) => {
@@ -178,9 +231,11 @@ function App() {
           }
           break;
         case 'session_snapshot':
-          setSession(msg.session);
-          setNodes(msg.nodes);
-          setEdges(msg.edges);
+          applySnapshot({
+            session: msg.session,
+            nodes: msg.nodes,
+            edges: msg.edges,
+          });
           if (msg.session.id && window.location.pathname === '/') {
             window.history.pushState(null, '', `/${msg.session.id}`);
           }
@@ -206,7 +261,7 @@ function App() {
           break;
       }
     });
-  }, [onMessage]);
+  }, [onMessage, applySnapshot]);
 
   const handleDiscover = useCallback(
     (phoneNumber: string) => {
