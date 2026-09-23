@@ -345,6 +345,27 @@ async def get_latest_session_for_window(window_id: str) -> Session | None:
             return Session(**dict(row)) if row else None
 
 
+async def get_resumable_session_for_window(window_id: str) -> Session | None:
+    """Return an unfinished discovery run that still owns pending work."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT DISTINCT s.*
+            FROM sessions s
+            JOIN nodes n ON n.session_id = s.id
+            WHERE s.discovery_window_id = ?
+              AND s.run_kind = 'discovery'
+              AND n.status IN ('pending', 'calling', 'parsing')
+            ORDER BY s.created_at DESC
+            LIMIT 1
+            """,
+            (window_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return Session(**dict(row)) if row else None
+
+
 async def session_has_pending_work(session_id: str) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(

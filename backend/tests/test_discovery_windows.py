@@ -16,6 +16,8 @@ from discovery_windows import (
 )
 from models import (
     DiscoveryWindow,
+    Node,
+    NodeStatus,
     RouteKind,
     Session,
     SessionStatus,
@@ -62,6 +64,54 @@ async def test_target_and_window_are_reused_by_anchor():
     assert first.id == second.id
     assert first.route == RouteKind.SELF_SERVICE
     assert first.budget_limit == 8
+
+
+@pytest.mark.asyncio
+async def test_resumable_session_skips_probes_and_completed_runs():
+    target = await db.get_or_create_target(phone_number="4006668800")
+    window = await get_current_window(
+        target,
+        now=datetime(2026, 9, 22, 22, 0, tzinfo=TZ),
+    )
+    completed = Session(
+        target_id=target.id,
+        discovery_window_id=window.id,
+        run_kind="discovery",
+        phone_number=target.phone_number,
+    )
+    await db.create_session(completed)
+    await db.create_node(
+        Node(session_id=completed.id, status=NodeStatus.COMPLETED)
+    )
+    probe = Session(
+        target_id=target.id,
+        discovery_window_id=window.id,
+        run_kind="probe",
+        phone_number=target.phone_number,
+    )
+    await db.create_session(probe)
+    await db.create_node(
+        Node(session_id=probe.id, status=NodeStatus.PENDING)
+    )
+    resumable = Session(
+        target_id=target.id,
+        discovery_window_id=window.id,
+        run_kind="discovery",
+        phone_number=target.phone_number,
+    )
+    await db.create_session(resumable)
+    await db.create_node(
+        Node(
+            session_id=resumable.id,
+            dtmf_path="1",
+            status=NodeStatus.PENDING,
+        )
+    )
+
+    found = await db.get_resumable_session_for_window(window.id)
+
+    assert found is not None
+    assert found.id == resumable.id
 
 
 @pytest.mark.asyncio

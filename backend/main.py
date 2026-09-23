@@ -86,11 +86,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                         status=WindowStatus.RUNNING,
                         verified_at=None,
                     )
-                    existing = await db.get_latest_session_for_window(window.id)
-                    resume = bool(
-                        existing
-                        and await db.session_has_pending_work(existing.id)
-                    )
+                    existing = await db.get_resumable_session_for_window(window.id)
+                    resume = existing is not None
                     if resume and existing is not None:
                         session = existing
                         await db.update_session(
