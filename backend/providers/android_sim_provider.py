@@ -346,7 +346,7 @@ class AndroidSimGatewayProvider:
                 await self._start_realtime_stream(
                     call_id,
                     target_key=key,
-                    menu_completion_ms=8000,
+                    menu_completion_ms=15000,
                     no_speech_timeout_ms=30000,
                 )
                 event = await asyncio.wait_for(

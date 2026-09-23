@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -10,6 +11,7 @@ from typing import Any
 from realtime.corrections import apply_asr_corrections
 
 EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
+logger = logging.getLogger(__name__)
 
 HUMAN_BOUNDARY_PATTERNS = (
     "转人工",
@@ -133,7 +135,10 @@ class RealtimeDecisionEngine:
             self._no_speech_task = asyncio.create_task(self._no_speech_timeout())
 
     async def feed(self, text: str, *, is_final: bool) -> None:
-        text = apply_asr_corrections(text.strip())
+        original = text.strip()
+        text = apply_asr_corrections(original)
+        if text != original:
+            logger.info("ASR correction: %r -> %r", original, text)
         if not text or self._stopped:
             return
 
@@ -150,6 +155,12 @@ class RealtimeDecisionEngine:
             return
 
         if is_final:
+            logger.info(
+                "ASR final: %r keys=%s target=%r",
+                text,
+                sorted(extract_dtmf_keys(text)),
+                self.target_key,
+            )
             self._final_text = f"{self._final_text} {text}".strip()
 
         if is_final:
