@@ -22,6 +22,7 @@ import os
 import uuid as uuid_lib
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import websockets
@@ -71,6 +72,9 @@ class GatewayConfig:
     recording_start_timeout: float = 30.0
     # Wait briefly for FreeSWITCH to finish flushing the WAV after hangup.
     recording_finalize_timeout: float = 5.0
+    # Shadow-judgment veto window; backend enforces the hangup deadline.
+    boundary_cancel_window_ms: int = 1500
+    automated_notice_extension_ms: int = 10000
 
     @classmethod
     def from_env(cls, env: dict | None = None) -> "GatewayConfig":
@@ -110,6 +114,12 @@ class GatewayConfig:
             ),
             recording_finalize_timeout=float(
                 source.get("CALL_RECORDING_FINALIZE_TIMEOUT", "5")
+            ),
+            boundary_cancel_window_ms=int(
+                source.get("SHADOW_BOUNDARY_CANCEL_WINDOW_MS", "1500")
+            ),
+            automated_notice_extension_ms=int(
+                source.get("SHADOW_AUTOMATED_NOTICE_EXTENSION_MS", "10000")
             ),
         )
 
@@ -489,6 +499,10 @@ class AndroidSimGatewayProvider:
                 "menu_completion_ms": menu_completion_ms,
                 "no_speech_timeout_ms": no_speech_timeout_ms,
                 "allow_target_key_fallback": allow_target_key_fallback,
+                "boundary_cancel_window_ms": self.config.boundary_cancel_window_ms,
+                "automated_notice_extension_ms": (
+                    self.config.automated_notice_extension_ms
+                ),
                 "gain": 1.0,
             },
             separators=(",", ":"),
@@ -526,6 +540,86 @@ class AndroidSimGatewayProvider:
                 if event.get("event_type") in terminal_types:
                     return event
         raise RuntimeError("Realtime event stream closed")
+
+    async def _next_realtime_event(
+        self,
+        call_id: str,
+        *,
+        terminal_types: set[str],
+    ) -> dict:
+        """Return the next terminal realtime event for ``call_id``.
+
+        While waiting, this also enforces the backend-side guarantee for the
+        shadow-judgment veto window: when a ``boundary_pending`` event arrives,
+        a local timer is armed to kill the call at its deadline. A subsequent
+        ``boundary_cancelled`` disarms it. This keeps the call from hanging even
+        if the relay process dies or never emits a follow-up terminal event.
+        """
+        deadline_task: asyncio.Task | None = None
+        try:
+            async with websockets.connect(
+                f"{self.config.realtime_relay_url}/events",
+                max_size=None,
+            ) as websocket:
+                while True:
+                    recv_task = asyncio.create_task(websocket.recv())
+                    waiters: set[asyncio.Task] = {recv_task}
+                    if deadline_task is not None:
+                        waiters.add(deadline_task)
+                    done, _ = await asyncio.wait(
+                        waiters,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if deadline_task is not None and deadline_task in done:
+                        recv_task.cancel()
+                        logger.warning(
+                            "boundary_pending deadline reached for call %s; killing",
+                            call_id,
+                        )
+                        await self.stop_call(call_id)
+                        return {
+                            "event_type": "boundary_pending_timeout",
+                            "channel_uuid": call_id,
+                        }
+                    if recv_task not in done:
+                        continue
+
+                    raw = recv_task.result()
+                    event = json.loads(raw)
+                    if event.get("channel_uuid") != call_id:
+                        continue
+                    event_type = event.get("event_type")
+                    if event_type == "boundary_pending":
+                        if deadline_task is not None and not deadline_task.done():
+                            deadline_task.cancel()
+                        deadline_task = asyncio.create_task(
+                            asyncio.sleep(self._boundary_deadline_delay(event))
+                        )
+                        continue
+                    if event_type == "boundary_cancelled":
+                        if deadline_task is not None and not deadline_task.done():
+                            deadline_task.cancel()
+                            deadline_task = None
+                        continue
+                    if event_type in terminal_types:
+                        return event
+        finally:
+            if deadline_task is not None and not deadline_task.done():
+                deadline_task.cancel()
+                await asyncio.gather(deadline_task, return_exceptions=True)
+
+    @staticmethod
+    def _boundary_deadline_delay(event: dict) -> float:
+        raw = event.get("deadline_at")
+        if isinstance(raw, str):
+            try:
+                deadline = datetime.fromisoformat(raw)
+                if deadline.tzinfo is None:
+                    deadline = deadline.replace(tzinfo=timezone.utc)
+                return max(0.0, (deadline - datetime.now(timezone.utc)).total_seconds())
+            except ValueError:
+                pass
+        return 1.5
 
     async def _send_dtmf_after_answer(self, call_id: str, sequence: str) -> None:
         """Replay a DTMF path onto the cellular call, mirroring the smoke test.

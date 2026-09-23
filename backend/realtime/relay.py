@@ -22,6 +22,7 @@ from realtime.audio import (
 )
 from realtime.decision import RealtimeDecisionEngine
 from realtime.events import EventBus
+from realtime.shadow import ShadowJudge
 from realtime.tencent_asr import TencentRealtimeASRClient, TencentRealtimeASRError
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,7 @@ class RealtimeRelay:
     def __init__(self, config: RelayConfig):
         self.config = config
         self.event_bus = EventBus()
+        self.shadow_judge = ShadowJudge.from_env()
         self._server: Any = None
 
     async def start(self) -> None:
@@ -134,6 +136,7 @@ class RealtimeRelay:
                 allow_target_key_fallback=bool(
                     metadata.get("allow_target_key_fallback", False)
                 ),
+                shadow_judge=self.shadow_judge,
             )
 
             async def on_asr_message(message: dict[str, Any]) -> None:

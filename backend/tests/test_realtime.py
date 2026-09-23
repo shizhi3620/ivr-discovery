@@ -528,3 +528,266 @@ async def test_real_call_probe_selects_only_matching_terminal_event():
 
     assert terminal["event_type"] == "dtmf_ready"
     assert terminal["key"] == "1"
+
+
+# -- shadow judgment (ADR 0040) ---------------------------------------------
+
+
+class _FakeShadowJudge:
+    enabled = True
+
+    def __init__(self, verdict):
+        self._verdict = verdict
+        self.calls = []
+
+    async def judge(self, *, channel_uuid, exploration_call_id, segments, trigger):
+        self.calls.append(trigger)
+        return self._verdict
+
+
+class _ShadowVerdict:
+    def __init__(self, classification, confidence, status="ok", reason="test"):
+        self.classification = classification
+        self.confidence = confidence
+        self.status = status
+        self.reason = reason
+        self.latency_ms = 1
+
+    @property
+    def usable(self):
+        from realtime.shadow import VALID_CLASSIFICATIONS
+
+        return self.status == "ok" and self.classification in VALID_CLASSIFICATIONS
+
+
+@pytest.mark.asyncio
+async def test_shadow_human_verdict_cancels_after_hours_boundary():
+    from realtime.shadow import AUTOMATED_NOTICE
+
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    judge = _FakeShadowJudge(_ShadowVerdict(AUTOMATED_NOTICE, 0.95))
+    engine = RealtimeDecisionEngine(
+        channel_uuid="c",
+        exploration_call_id="e",
+        target_key="1",
+        on_event=on_event,
+        shadow_judge=judge,
+        boundary_cancel_window_ms=50,
+    )
+    await engine.feed("您的电话正在排队，请稍等", is_final=True)
+    await asyncio.sleep(0.2)
+    kinds = [e["event_type"] for e in events]
+    assert kinds[0] == "boundary_pending"
+    assert "shadow_verdict" in kinds
+    assert "boundary_cancelled" in kinds
+    assert "human_boundary" not in kinds
+
+
+@pytest.mark.asyncio
+async def test_shadow_human_verdict_keeps_boundary_when_model_says_human():
+    from realtime.shadow import HUMAN_OR_UNKNOWN
+
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    judge = _FakeShadowJudge(_ShadowVerdict(HUMAN_OR_UNKNOWN, 0.99))
+    engine = RealtimeDecisionEngine(
+        channel_uuid="c",
+        exploration_call_id="e",
+        target_key="1",
+        on_event=on_event,
+        shadow_judge=judge,
+        boundary_cancel_window_ms=50,
+    )
+    await engine.feed("您的电话正在转接人工坐席", is_final=True)
+    await asyncio.sleep(0.2)
+    kinds = [e["event_type"] for e in events]
+    assert "boundary_pending" in kinds
+    assert "human_boundary" in kinds
+    assert "boundary_cancelled" not in kinds
+
+
+@pytest.mark.asyncio
+async def test_shadow_without_judge_still_immediately_stops():
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    engine = RealtimeDecisionEngine(
+        channel_uuid="c",
+        exploration_call_id="e",
+        target_key="1",
+        on_event=on_event,
+    )
+    await engine.feed("您的电话正在转接人工坐席", is_final=True)
+    kinds = [e["event_type"] for e in events]
+    assert kinds == ["human_boundary"]
+
+
+@pytest.mark.asyncio
+async def test_shadow_low_confidence_does_not_cancel_boundary():
+    from realtime.shadow import AUTOMATED_NOTICE
+
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    judge = _FakeShadowJudge(_ShadowVerdict(AUTOMATED_NOTICE, 0.5))
+    engine = RealtimeDecisionEngine(
+        channel_uuid="c",
+        exploration_call_id="e",
+        target_key="1",
+        on_event=on_event,
+        shadow_judge=judge,
+        boundary_cancel_window_ms=50,
+    )
+    await engine.feed("您的电话正在排队，请稍等", is_final=True)
+    await asyncio.sleep(0.2)
+    kinds = [e["event_type"] for e in events]
+    assert "boundary_cancelled" not in kinds
+    assert "human_boundary" in kinds
+
+
+@pytest.mark.asyncio
+async def test_shadow_human_veto_blocks_dtmf_ready():
+    from realtime.shadow import HUMAN_OR_UNKNOWN
+
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    judge = _FakeShadowJudge(_ShadowVerdict(HUMAN_OR_UNKNOWN, 0.95))
+    engine = RealtimeDecisionEngine(
+        channel_uuid="c",
+        exploration_call_id="e",
+        target_key="1",
+        on_event=on_event,
+        shadow_judge=judge,
+        silence_ms=20,
+    )
+    await engine.feed("请按1", is_final=True)
+    await asyncio.sleep(0.4)
+    kinds = [e["event_type"] for e in events]
+    assert "dtmf_ready" not in kinds
+    assert "human_boundary" in kinds
+
+
+@pytest.mark.asyncio
+async def test_shadow_automated_notice_defers_then_unknown_boundary():
+    from realtime.shadow import AUTOMATED_NOTICE
+
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    judge = _FakeShadowJudge(_ShadowVerdict(AUTOMATED_NOTICE, 0.9))
+    engine = RealtimeDecisionEngine(
+        channel_uuid="c",
+        exploration_call_id="e",
+        target_key="1",
+        on_event=on_event,
+        shadow_judge=judge,
+        silence_ms=20,
+        automated_notice_extension_ms=50,
+    )
+    await engine.feed("请按1", is_final=True)
+    await asyncio.sleep(0.4)
+    kinds = [e["event_type"] for e in events]
+    assert "dtmf_ready" not in kinds
+    assert kinds.count("shadow_verdict") >= 1
+
+
+@pytest.mark.asyncio
+async def test_shadow_ivr_menu_cancels_unknown_boundary():
+    from realtime.shadow import IVR_MENU
+
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    judge = _FakeShadowJudge(_ShadowVerdict(IVR_MENU, 0.95))
+    engine = RealtimeDecisionEngine(
+        channel_uuid="c",
+        exploration_call_id="e",
+        target_key="2",
+        on_event=on_event,
+        shadow_judge=judge,
+        menu_completion_ms=30,
+    )
+    await engine.feed("感谢您的致电", is_final=True)
+    await asyncio.sleep(0.3)
+    kinds = [e["event_type"] for e in events]
+    assert "unknown_boundary" not in kinds[:2] or "shadow_verdict" in kinds
+    # An ivr_menu verdict cancels the pending unknown boundary and re-arms.
+    assert "shadow_verdict" in kinds
+
+
+@pytest.mark.asyncio
+async def test_shadow_judge_parses_valid_json(tmp_path):
+    from realtime.shadow import ShadowJudge
+
+    class _Provider:
+        async def complete(self, prompt, *, max_tokens=1024, json_mode=False):
+            return json.dumps(
+                {
+                    "classification": "ivr_menu",
+                    "confidence": 0.91,
+                    "reason": "menu with DTMF options",
+                }
+            )
+
+    judge = ShadowJudge(enabled=True, provider=_Provider(), audit_dir=str(tmp_path))
+    verdict = await judge.judge(
+        channel_uuid="c",
+        exploration_call_id="e",
+        segments=[("请按1", 0.0)],
+        trigger="target_key",
+    )
+    assert verdict.classification == "ivr_menu"
+    assert verdict.confidence == 0.91
+    assert verdict.usable
+    assert (tmp_path / "shadow-judgments.jsonl").is_file()
+
+
+@pytest.mark.asyncio
+async def test_shadow_judge_disabled_returns_none(tmp_path):
+    from realtime.shadow import ShadowJudge
+
+    judge = ShadowJudge(enabled=False, audit_dir=str(tmp_path))
+    verdict = await judge.judge(
+        channel_uuid="c",
+        exploration_call_id="e",
+        segments=[("请按1", 0.0)],
+        trigger="target_key",
+    )
+    assert verdict is None
+
+
+@pytest.mark.asyncio
+async def test_shadow_judge_bad_json_is_unavailable(tmp_path):
+    from realtime.shadow import ShadowJudge, UNAVAILABLE
+
+    class _Provider:
+        async def complete(self, prompt, *, max_tokens=1024, json_mode=False):
+            return "not json"
+
+    judge = ShadowJudge(enabled=True, provider=_Provider(), audit_dir=str(tmp_path))
+    verdict = await judge.judge(
+        channel_uuid="c",
+        exploration_call_id="e",
+        segments=[("请按1", 0.0)],
+        trigger="target_key",
+    )
+    assert verdict.classification == UNAVAILABLE
+    assert verdict.usable is False
