@@ -131,6 +131,9 @@ class RealtimeRelay:
                 no_speech_timeout_ms=int(
                     metadata.get("no_speech_timeout_ms", 5000)
                 ),
+                allow_target_key_fallback=bool(
+                    metadata.get("allow_target_key_fallback", False)
+                ),
             )
 
             async def on_asr_message(message: dict[str, Any]) -> None:

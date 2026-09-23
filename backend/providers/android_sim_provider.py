@@ -348,6 +348,7 @@ class AndroidSimGatewayProvider:
                     target_key=key,
                     menu_completion_ms=15000,
                     no_speech_timeout_ms=30000,
+                    allow_target_key_fallback=(key == "2"),
                 )
                 event = await asyncio.wait_for(
                     self._next_realtime_event(
@@ -382,6 +383,7 @@ class AndroidSimGatewayProvider:
                 target_key=None,
                 menu_completion_ms=12000,
                 no_speech_timeout_ms=15000,
+                allow_target_key_fallback=False,
             )
             try:
                 observation = await asyncio.wait_for(
@@ -427,6 +429,7 @@ class AndroidSimGatewayProvider:
         target_key: str | None,
         menu_completion_ms: int,
         no_speech_timeout_ms: int,
+        allow_target_key_fallback: bool,
     ) -> None:
         metadata = json.dumps(
             {
@@ -440,6 +443,7 @@ class AndroidSimGatewayProvider:
                 "silence_ms": 800,
                 "menu_completion_ms": menu_completion_ms,
                 "no_speech_timeout_ms": no_speech_timeout_ms,
+                "allow_target_key_fallback": allow_target_key_fallback,
                 "gain": 1.0,
             },
             separators=(",", ":"),

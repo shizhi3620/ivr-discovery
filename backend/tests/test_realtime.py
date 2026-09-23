@@ -67,6 +67,55 @@ async def test_decision_uses_asr_phrase_correction(monkeypatch):
         ),
     )
     reset_asr_corrections()
+
+
+@pytest.mark.asyncio
+async def test_english_fallback_uses_partial_support_phrase_for_key_two():
+    events: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        events.append(event)
+
+    engine = RealtimeDecisionEngine(
+        channel_uuid="channel",
+        exploration_call_id="call",
+        target_key="2",
+        on_event=on_event,
+        silence_ms=20,
+        no_speech_timeout_ms=1000,
+        allow_target_key_fallback=True,
+    )
+    await engine.start()
+    await engine.feed("Welcome to English support", is_final=False)
+    await asyncio.sleep(0.05)
+    await engine.close()
+
+    assert events[-1]["event_type"] == "dtmf_ready"
+    assert events[-1]["key"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_english_fallback_requires_explicit_enablement():
+    events: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        events.append(event)
+
+    engine = RealtimeDecisionEngine(
+        channel_uuid="channel",
+        exploration_call_id="call",
+        target_key="2",
+        on_event=on_event,
+        silence_ms=20,
+        no_speech_timeout_ms=1000,
+        allow_target_key_fallback=False,
+    )
+    await engine.start()
+    await engine.feed("Welcome to English support", is_final=False)
+    await asyncio.sleep(0.05)
+    await engine.close()
+
+    assert events == []
     events: list[dict] = []
 
     async def on_event(event: dict) -> None:

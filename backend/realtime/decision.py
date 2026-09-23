@@ -115,6 +115,7 @@ class RealtimeDecisionEngine:
         silence_ms: int = 800,
         menu_completion_ms: int = 8000,
         no_speech_timeout_ms: int = 5000,
+        allow_target_key_fallback: bool = False,
     ) -> None:
         self.channel_uuid = channel_uuid
         self.exploration_call_id = exploration_call_id
@@ -123,9 +124,11 @@ class RealtimeDecisionEngine:
         self.silence_seconds = max(0.0, silence_ms / 1000)
         self.menu_completion_seconds = max(0.0, menu_completion_ms / 1000)
         self.no_speech_timeout_seconds = max(0.0, no_speech_timeout_ms / 1000)
+        self.allow_target_key_fallback = allow_target_key_fallback
         self._revision = 0
         self._final_text = ""
         self._seen_keys: set[str] = set()
+        self._fallback_seen = False
         self._stopped = False
         self._settle_task: asyncio.Task | None = None
         self._no_speech_task: asyncio.Task | None = None
@@ -163,8 +166,10 @@ class RealtimeDecisionEngine:
             )
             self._final_text = f"{self._final_text} {text}".strip()
 
-        if is_final:
-            self._seen_keys.update(extract_dtmf_keys(text))
+        keys = extract_dtmf_keys(text)
+        fallback_ready = self._fallback_ready(text)
+        if is_final or keys or fallback_ready:
+            self._seen_keys.update(keys)
             self._revision += 1
             if self._settle_task and not self._settle_task.done():
                 self._settle_task.cancel()
@@ -182,7 +187,11 @@ class RealtimeDecisionEngine:
         try:
             delay = (
                 self.silence_seconds
-                if self.target_key and self.target_key in self._seen_keys
+                if self.target_key
+                and (
+                    self.target_key in self._seen_keys
+                    or self._fallback_seen
+                )
                 else self.menu_completion_seconds
             )
             await asyncio.sleep(delay)
@@ -191,11 +200,13 @@ class RealtimeDecisionEngine:
         if self._stopped or revision != self._revision:
             return
 
-        if self.target_key and self.target_key in self._seen_keys:
+        if self.target_key and (
+            self.target_key in self._seen_keys or self._fallback_seen
+        ):
             await self._stop_with(
                 "dtmf_ready",
                 key=self.target_key,
-                text=self._final_text,
+                text=self._final_text or "English support fallback",
             )
             return
 
@@ -210,6 +221,19 @@ class RealtimeDecisionEngine:
             keys=sorted(self._seen_keys),
             reason=reason,
         )
+
+    def _fallback_ready(self, text: str) -> bool:
+        if not self.allow_target_key_fallback or self.target_key != "2":
+            self._fallback_seen = False
+            return False
+        lowered = text.lower()
+        self._fallback_seen = (
+            "english" in lowered
+            and ("support" in lowered or "technical" in lowered)
+        )
+        if self._fallback_seen:
+            logger.info("Target key 2 accepted from English support phrase fallback")
+        return self._fallback_seen
 
     async def _no_speech_timeout(self) -> None:
         try:
