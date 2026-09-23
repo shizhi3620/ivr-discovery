@@ -80,6 +80,9 @@ class GatewayConfig:
     observation_menu_completion_ms: int = 90000
     observation_no_speech_ms: int = 90000
     observation_timeout: float = 95.0
+    # Navigation: how long a hold/quality phrase may be followed by the real
+    # menu before it is treated as a terminal human boundary.
+    human_boundary_menu_grace_ms: int = 12000
 
     @classmethod
     def from_env(cls, env: dict | None = None) -> "GatewayConfig":
@@ -134,6 +137,9 @@ class GatewayConfig:
             ),
             observation_timeout=float(
                 source.get("CALL_OBSERVATION_TIMEOUT", "95")
+            ),
+            human_boundary_menu_grace_ms=int(
+                source.get("CALL_HUMAN_BOUNDARY_MENU_GRACE_MS", "12000")
             ),
         )
 
@@ -377,6 +383,9 @@ class AndroidSimGatewayProvider:
                     menu_completion_ms=15000,
                     no_speech_timeout_ms=30000,
                     allow_target_key_fallback=(key == "2"),
+                    human_boundary_menu_grace_ms=(
+                        self.config.human_boundary_menu_grace_ms
+                    ),
                 )
                 terminal_types = {
                     "dtmf_ready",
@@ -497,6 +506,7 @@ class AndroidSimGatewayProvider:
         no_speech_timeout_ms: int,
         allow_target_key_fallback: bool,
         hold_through_human_boundary: bool = False,
+        human_boundary_menu_grace_ms: int = 0,
     ) -> None:
         metadata = json.dumps(
             {
@@ -512,6 +522,7 @@ class AndroidSimGatewayProvider:
                 "no_speech_timeout_ms": no_speech_timeout_ms,
                 "allow_target_key_fallback": allow_target_key_fallback,
                 "hold_through_human_boundary": hold_through_human_boundary,
+                "human_boundary_menu_grace_ms": human_boundary_menu_grace_ms,
                 "boundary_cancel_window_ms": self.config.boundary_cancel_window_ms,
                 "automated_notice_extension_ms": (
                     self.config.automated_notice_extension_ms

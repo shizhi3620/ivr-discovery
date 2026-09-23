@@ -140,6 +140,12 @@ class RealtimeRelay:
                 hold_through_human_boundary=bool(
                     metadata.get("hold_through_human_boundary", False)
                 ),
+                human_boundary_menu_grace_ms=int(
+                    metadata.get(
+                        "human_boundary_menu_grace_ms",
+                        os.getenv("CALL_HUMAN_BOUNDARY_MENU_GRACE_MS", "12000"),
+                    )
+                ),
             )
 
             async def on_asr_message(message: dict[str, Any]) -> None:

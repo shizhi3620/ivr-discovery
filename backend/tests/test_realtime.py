@@ -892,3 +892,60 @@ async def test_observation_captures_menu_after_hold_phrase():
 
     assert [e for e in events if e["event_type"] == "human_boundary"] == []
     assert any(e["event_type"] == "unknown_boundary" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_navigation_defers_hold_phrase_until_real_menu_arrives():
+    """With a grace window, a hold phrase must not abort navigation when a
+    real DTMF menu follows it."""
+    events: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        events.append(event)
+
+    engine = RealtimeDecisionEngine(
+        channel_uuid="channel",
+        exploration_call_id="call",
+        target_key="1",
+        on_event=on_event,
+        silence_ms=40,
+        menu_completion_ms=10000,
+        no_speech_timeout_ms=10000,
+        human_boundary_menu_grace_ms=500,
+    )
+    await engine.start()
+    await engine.feed("请稍等。我在查看您的电话。", is_final=True)
+    await asyncio.sleep(0.03)
+    assert [e for e in events if e["event_type"] == "human_boundary"] == []
+
+    await engine.feed("如需咨询账单或资费相关问题，请按1。", is_final=True)
+    await asyncio.sleep(0.2)
+    await engine.close()
+
+    assert [e for e in events if e["event_type"] == "human_boundary"] == []
+    assert any(e["event_type"] == "dtmf_ready" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_navigation_still_stops_on_hold_phrase_with_no_menu():
+    """If no menu follows within the grace window, the boundary still fires."""
+    events: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        events.append(event)
+
+    engine = RealtimeDecisionEngine(
+        channel_uuid="channel",
+        exploration_call_id="call",
+        target_key="1",
+        on_event=on_event,
+        menu_completion_ms=10000,
+        no_speech_timeout_ms=10000,
+        human_boundary_menu_grace_ms=60,
+    )
+    await engine.start()
+    await engine.feed("请稍等。", is_final=True)
+    await asyncio.sleep(0.25)
+    await engine.close()
+
+    assert [e["event_type"] for e in events if e["event_type"] == "human_boundary"] == ["human_boundary"]

@@ -151,6 +151,7 @@ class RealtimeDecisionEngine:
         boundary_cancel_window_ms: int = DEFAULT_BOUNDARY_CANCEL_WINDOW_MS,
         automated_notice_extension_ms: int = DEFAULT_AUTOMATED_NOTICE_EXTENSION_MS,
         hold_through_human_boundary: bool = False,
+        human_boundary_menu_grace_ms: int = 0,
     ) -> None:
         self.channel_uuid = channel_uuid
         self.exploration_call_id = exploration_call_id
@@ -170,6 +171,13 @@ class RealtimeDecisionEngine:
         # Observation calls keep listening through hold/queue announcements,
         # because an automated menu or a repeated timeout reminder may follow.
         self.hold_through_human_boundary = hold_through_human_boundary
+        # While navigating to a specific key, a hold/quality phrase can precede
+        # the real menu (Apple's line says "请稍等。我在查看您的电话。" and then
+        # "请按1..."). Give the menu this long to appear before treating the
+        # hold phrase as a genuine human-service boundary.
+        self.human_boundary_menu_grace_seconds = max(
+            0.0, human_boundary_menu_grace_ms / 1000
+        )
         self._revision = 0
         self._final_text = ""
         self._context_segments: list[tuple[str, float]] = []
@@ -230,6 +238,19 @@ class RealtimeDecisionEngine:
 
         keys = extract_dtmf_keys(text)
         fallback_ready = self._fallback_ready(text)
+        if (
+            not self.shadow_enabled
+            and (keys or fallback_ready)
+            and self._pending_boundary
+        ):
+            # The real menu arrived: stop treating the earlier hold phrase as a
+            # terminal human boundary and let the settle logic press the key.
+            self._pending_boundary = False
+            if (
+                self._pending_boundary_task
+                and not self._pending_boundary_task.done()
+            ):
+                self._pending_boundary_task.cancel()
         if is_final or keys or fallback_ready:
             self._seen_keys.update(keys)
             self._revision += 1
@@ -251,6 +272,17 @@ class RealtimeDecisionEngine:
         if self._pending_boundary:
             return
         if not self.shadow_enabled:
+            if (
+                self.target_key
+                and self.human_boundary_menu_grace_seconds > 0
+            ):
+                # Navigation mode: defer the boundary briefly so a hold phrase
+                # that precedes the target menu does not abort the call.
+                self._pending_boundary = True
+                self._pending_boundary_task = asyncio.create_task(
+                    self._deferred_human_boundary(text=text, context=context)
+                )
+                return
             await self._stop_with(
                 "human_boundary",
                 text=text,
@@ -278,6 +310,25 @@ class RealtimeDecisionEngine:
         )
         self._pending_boundary_task = asyncio.create_task(
             self._resolve_pending_boundary(text=text, context=context)
+        )
+
+    async def _deferred_human_boundary(self, *, text: str, context: str) -> None:
+        """Hold a boundary decision just long enough for a following menu."""
+        try:
+            await asyncio.sleep(self.human_boundary_menu_grace_seconds)
+        except asyncio.CancelledError:
+            return
+        if self._stopped:
+            return
+        if self.target_key in self._seen_keys or self._fallback_seen:
+            self._pending_boundary = False
+            return
+        self._pending_boundary = False
+        await self._stop_with(
+            "human_boundary",
+            text=text,
+            context=context,
+            reason="strong human-service keyword",
         )
 
     async def _resolve_pending_boundary(self, *, text: str, context: str) -> None:
