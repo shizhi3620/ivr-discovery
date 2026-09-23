@@ -220,6 +220,25 @@ async def list_discovery_windows(target_id: str) -> list[DiscoveryWindow]:
             ]
 
 
+# Window fields that feed the verification gate. Changing any of them can
+# flip a window between verified and unverified, so a cached optimization
+# report for the owning target must not survive the change.
+_VERIFICATION_RELEVANT_WINDOW_FIELDS = frozenset(
+    {
+        "status",
+        "verified_at",
+        "unresolved_faults",
+        "frontier",
+        "all_branches_terminal",
+        "human_boundary_found",
+        "in_window",
+        "budget_used",
+        "budget_limit",
+        "route",
+    }
+)
+
+
 async def update_discovery_window(window_id: str, **kwargs) -> None:
     if not kwargs:
         return
@@ -240,6 +259,20 @@ async def update_discovery_window(window_id: str, **kwargs) -> None:
             f"UPDATE discovery_windows SET {sets} WHERE id = ?",
             (*processed.values(), window_id),
         )
+        # A cached target report embeds the window verification state. When that
+        # state changes we drop the cache so the next read regenerates it
+        # instead of serving a stale "verified" claim.
+        if _VERIFICATION_RELEVANT_WINDOW_FIELDS & processed.keys():
+            async with db.execute(
+                "SELECT target_id FROM discovery_windows WHERE id = ?",
+                (window_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row and row[0]:
+                await db.execute(
+                    "DELETE FROM target_optimization_reports WHERE target_id = ?",
+                    (row[0],),
+                )
         await db.commit()
 
 

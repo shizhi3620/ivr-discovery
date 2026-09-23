@@ -227,3 +227,56 @@ async def test_target_report_is_complete_after_all_routes_verified():
     assert report["missing_routes"] == []
     assert report["target_id"] == target.id
     assert "PROBE-ONLY-NODE" not in provider.complete.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_window_verification_change_invalidates_cached_report():
+    target = Target(
+        phone_number="4006668800",
+        required_routes=[RouteKind.HUMAN, RouteKind.SELF_SERVICE],
+    )
+    await db.create_target(target)
+    self_service = DiscoveryWindow(
+        target_id=target.id,
+        route=RouteKind.SELF_SERVICE,
+        anchor_date="2026-09-22",
+        starts_at="2026-09-22T21:00:00+08:00",
+        ends_at="2026-09-23T09:00:00+08:00",
+        budget_limit=8,
+        status=WindowStatus.VERIFIED,
+        in_window=True,
+        all_branches_terminal=True,
+    )
+    await db.create_discovery_window(self_service)
+    await db.create_discovery_window(
+        DiscoveryWindow(
+            target_id=target.id,
+            route=RouteKind.HUMAN,
+            anchor_date="2026-09-22",
+            starts_at="2026-09-22T09:00:00+08:00",
+            ends_at="2026-09-22T21:00:00+08:00",
+            budget_limit=4,
+            status=WindowStatus.VERIFIED,
+            in_window=True,
+            all_branches_terminal=True,
+        )
+    )
+
+    provider = AsyncMock()
+    provider.complete.return_value = json.dumps(_report_payload(), ensure_ascii=False)
+    report = await generate_target_optimization_report(target.id, provider=provider)
+    assert report["draft"] is False
+    assert await db.get_target_optimization_report(target.id) is not None
+
+    # The window regresses to unverified: a later realtime fault is recorded.
+    await db.update_discovery_window(
+        self_service.id,
+        status=WindowStatus.COMPLETED,
+        unresolved_faults=1,
+        verified_at=None,
+    )
+
+    # The cached "verified" report must not survive the gate change.
+    assert await db.get_target_optimization_report(target.id) is None
+    with pytest.raises(ReportNotReadyError, match="self-service"):
+        await generate_target_optimization_report(target.id)
