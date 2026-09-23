@@ -51,3 +51,22 @@ def test_calibration_fails_on_low_accuracy(tmp_path):
 def test_calibration_requires_labels(tmp_path):
     path = _write(tmp_path / "c.jsonl", [{"trigger": "target_key", "classification": "ivr_menu"}])
     assert score(path) == 2
+
+
+def test_calibration_scores_insufficient_coverage_when_direction_untested(tmp_path):
+    # Only request-hangup samples: the high-risk cancel-hangup direction has no
+    # samples, so its "zero false positives" gate is vacuous, not passed.
+    rows = [
+        {"trigger": "target_key", "classification": "ivr_menu", "label": "ivr_menu"},
+        {"trigger": "target_key", "classification": "ivr_menu", "label": "ivr_menu"},
+    ]
+    path = _write(tmp_path / "c.jsonl", rows)
+    assert score(path) == 3
+
+
+def test_calibration_scores_insufficient_coverage_when_other_direction_untested(tmp_path):
+    rows = [
+        {"trigger": "boundary_pending", "classification": "automated_notice", "label": "automated_notice"},
+    ]
+    path = _write(tmp_path / "c.jsonl", rows)
+    assert score(path) == 3

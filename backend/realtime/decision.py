@@ -482,6 +482,7 @@ class RealtimeDecisionEngine:
                 status=getattr(verdict, "status", ""),
                 latency_ms=getattr(verdict, "latency_ms", 0),
                 reason=getattr(verdict, "reason", ""),
+                context=getattr(verdict, "context", ""),
             )
         return verdict
 

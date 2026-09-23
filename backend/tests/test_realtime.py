@@ -791,3 +791,48 @@ async def test_shadow_judge_bad_json_is_unavailable(tmp_path):
     )
     assert verdict.classification == UNAVAILABLE
     assert verdict.usable is False
+
+
+@pytest.mark.asyncio
+async def test_shadow_verdict_event_carries_judged_context(tmp_path):
+    """Each shadow_verdict event must be self-contained for offline labelling."""
+    from realtime.shadow import AUTOMATED_NOTICE, ShadowJudge
+
+    class _Provider:
+        async def complete(self, prompt, *, max_tokens=1024, json_mode=False):
+            return json.dumps(
+                {
+                    "classification": AUTOMATED_NOTICE,
+                    "confidence": 0.9,
+                    "reason": "notice",
+                }
+            )
+
+    judge = ShadowJudge(enabled=True, provider=_Provider(), audit_dir=str(tmp_path))
+    verdict = await judge.judge(
+        channel_uuid="c",
+        exploration_call_id="e",
+        segments=[("请稍等。", 0.0)],
+        trigger="boundary_pending",
+    )
+    assert verdict.context == "请稍等。"
+
+    # The decision engine must surface that same context on the event stream.
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    engine = RealtimeDecisionEngine(
+        channel_uuid="c",
+        exploration_call_id="e",
+        target_key="1",
+        on_event=on_event,
+        shadow_judge=judge,
+        boundary_cancel_window_ms=50,
+    )
+    await engine.feed("请稍等", is_final=True)
+    await asyncio.sleep(0.2)
+    verdicts = [e for e in events if e["event_type"] == "shadow_verdict"]
+    assert verdicts, "expected a shadow_verdict event"
+    assert verdicts[0]["context"] == "请稍等"

@@ -19,7 +19,7 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +73,10 @@ class ShadowVerdict:
     reason: str
     status: str
     latency_ms: int
+    # Exact rendered context sent to the model. Carried on the verdict so the
+    # ``shadow_verdict`` event stream is self-contained and each decision point
+    # can be human-labelled offline without joining a second audit file.
+    context: str = ""
 
     @property
     def usable(self) -> bool:
@@ -129,7 +133,7 @@ class ShadowJudge:
 
         context = self._render_context(segments)
         started = time.monotonic()
-        verdict = await self._classify(context, started)
+        verdict = replace(await self._classify(context, started), context=context)
         self._write_audit(
             channel_uuid=channel_uuid,
             exploration_call_id=exploration_call_id,

@@ -8,6 +8,11 @@ the three gates:
 - cancel_hangup_false_positive == 0
 - request_hangup_false_positive <= 1
 - overall_accuracy >= 0.9
+
+Coverage is part of the gate, not just the metric: a direction with zero
+labelled decision points satisfies its false-positive gate vacuously, which is
+not evidence of safety. ``score`` returns a distinct exit code ``3`` when either
+veto direction has no samples.
 """
 
 from __future__ import annotations
@@ -52,6 +57,11 @@ def score(path: Path) -> int:
     print(f"cancel_hangup_false_positive={cancel_fp}")
     print(f"request_hangup_false_positive={request_fp}")
 
+    cancel_samples = sum(1 for r in labelled if r.get("trigger") == "boundary_pending")
+    request_samples = sum(1 for r in labelled if r.get("trigger") == "target_key")
+    print(f"cancel_hangup_samples={cancel_samples}")
+    print(f"request_hangup_samples={request_samples}")
+
     failures = []
     if cancel_fp != 0:
         failures.append("cancel-hangup direction has false positives (gate: 0)")
@@ -63,6 +73,18 @@ def score(path: Path) -> int:
         for f in failures:
             print(f"FAIL: {f}")
         return 1
+
+    uncovered = []
+    if cancel_samples == 0:
+        uncovered.append("cancel-hangup direction (boundary_pending) has 0 samples")
+    if request_samples == 0:
+        uncovered.append("request-hangup direction (target_key) has 0 samples")
+    if uncovered:
+        for u in uncovered:
+            print(f"INSUFFICIENT COVERAGE: {u}")
+        print("Coverage is gated: an untested direction is not a passed direction.")
+        return 3
+
     print("PASS: calibration gates satisfied")
     return 0
 
