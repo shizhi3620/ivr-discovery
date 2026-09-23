@@ -59,5 +59,17 @@ GsmAudioPort: Native audio prepared in 4567 ms
 CallMgr: Invalid phone number: invalid
 ```
 
-预热在拨号前完成，测试后无残留 SIP 频道。该结果证明启动顺序已经修正；仍需
-一次真实电话确认首个“欢”能被录音捕获。
+预热在拨号前完成，测试后无残留 SIP 频道。
+
+## 真实通话复验
+
+在 `2026-09-23 07:58 CST` 仅监听、不发送 DTMF 拨打 `4006668800`：
+
+- channel：`2fc700c8-5cf3-4a91-baf0-bb43df8bad17`
+- `SIP call answered` 后开始预热
+- `Native audio prepared in 4644 ms`
+- 预热完成后才执行 `Placing GSM call`
+- 录音时长 `44.54` 秒
+- 腾讯 ASR 首句完整返回：`感谢您致电Apple`
+
+因此首个音节截断问题已修复。录音已通过 QuickTime 播放供人工确认。
