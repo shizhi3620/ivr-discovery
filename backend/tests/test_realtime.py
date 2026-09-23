@@ -23,7 +23,7 @@ from realtime.tencent_asr import build_realtime_uri
 def test_extract_dtmf_keys_chinese_and_english():
     assert extract_dtmf_keys("如果您同意，请按1；For English, press 2") == {"1", "2"}
     assert extract_dtmf_keys("普通话请按一") == {"1"}
-    assert extract_dtmf_keys("For technical support in English, press two") == {"2"}
+    assert extract_dtmf_keys("For tech support in English, press 2") == {"2"}
     assert extract_dtmf_keys("Press star to repeat") == {"*"}
 
 
@@ -34,10 +34,10 @@ def test_environment_asr_corrections(monkeypatch):
             {
                 "点Apple": "感谢您致电Apple",
                     "Export in English": (
-                        "For technical support in English, press two"
+                        "For tech support in English, press 2"
                     ),
                     "Support in English": (
-                        "For technical support in English, press two"
+                        "For tech support in English, press 2"
                     ),
             },
             ensure_ascii=False,
@@ -46,10 +46,10 @@ def test_environment_asr_corrections(monkeypatch):
     reset_asr_corrections()
     assert apply_asr_corrections("点Apple。 export in english") == (
         "感谢您致电Apple。 "
-        "For technical support in English, press two"
+        "For tech support in English, press 2"
     )
     assert apply_asr_corrections("Support in English.") == (
-        "For technical support in English, press two."
+        "For tech support in English, press 2."
     )
     reset_asr_corrections()
 
@@ -61,7 +61,7 @@ async def test_decision_uses_asr_phrase_correction(monkeypatch):
         json.dumps(
             {
                 "Export in English.": (
-                    "For technical support in English, press two."
+                    "For tech support in English, press 2"
                 )
             }
         ),

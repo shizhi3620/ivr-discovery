@@ -38,7 +38,7 @@ ImsSenderRxr: DTMF_STOP [SUB0]
 
 ```text
 感谢您致电Apple，普通话按1。
-For Tech support in English, press two.
+For tech support in English, press 2.
 ```
 
 文件 ASR 对整通电话给出相同结果。

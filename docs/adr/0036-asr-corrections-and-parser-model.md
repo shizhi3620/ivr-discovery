@@ -7,7 +7,7 @@
 同时，腾讯实时 ASR 会把 Apple 话术中的：
 
 - 首个音节可能因 GSM 音频桥启动延迟缺失，ASR 将残缺的首句识别成“点Apple”
-- “For technical support in English, press two”识别成“Export in English”
+- “For tech support in English, press 2”识别成“Export in English”
 
 项目决定：
 

@@ -185,7 +185,7 @@ class TestParseTranscript:
             }
         )
         await parse_transcript(
-            "欢迎致电Apple。普通话按1。For technical support in English, press two.",
+            "欢迎致电Apple。普通话按1。For tech support in English, press 2。",
             provider=provider,
             dtmf_path="1w1",
         )

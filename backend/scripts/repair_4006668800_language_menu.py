@@ -23,11 +23,11 @@ CORRECTED_TRANSCRIPT = """感谢您致电Apple。
 如果您同意，请按1。
 如需结束本次通话，请按2。
 感谢您致电Apple。普通话按1。
-For technical support in English, press two.
+For tech support in English, press 2.
 您的通话将会被录音。"""
 LANGUAGE_PROMPT = (
     "感谢您致电Apple。普通话按1。"
-    "For technical support in English, press two。"
+    "For tech support in English, press 2。"
     "您的通话将会被录音。"
 )
 
@@ -81,7 +81,7 @@ async def main() -> None:
     }
     children = {
         "1": ("普通话", "1w1"),
-        "2": ("For technical support in English", "1w2"),
+        "2": ("For tech support in English", "1w2"),
     }
     for key, (label, path) in children.items():
         if key in existing_keys:
