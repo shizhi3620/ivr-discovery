@@ -32,7 +32,7 @@ def test_environment_asr_corrections(monkeypatch):
         "ASR_PHRASE_CORRECTIONS_JSON",
         json.dumps(
             {
-                "点Apple": "[录音起点缺失首字]迎致电Apple",
+                "点Apple": "感谢您致电Apple",
                     "Export in English": (
                         "For technical support in English, press two"
                     ),
@@ -45,7 +45,7 @@ def test_environment_asr_corrections(monkeypatch):
     )
     reset_asr_corrections()
     assert apply_asr_corrections("点Apple。 export in english") == (
-        "[录音起点缺失首字]迎致电Apple。 "
+        "感谢您致电Apple。 "
         "For technical support in English, press two"
     )
     assert apply_asr_corrections("Support in English.") == (

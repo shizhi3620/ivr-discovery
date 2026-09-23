@@ -77,6 +77,7 @@ class Session(BaseModel):
     id: str = Field(default_factory=new_id)
     target_id: Optional[str] = None
     discovery_window_id: Optional[str] = None
+    run_kind: str = "discovery"
     phone_number: str = ""
     status: SessionStatus = SessionStatus.PENDING
     total_cost: float = 0.0
@@ -165,6 +166,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     target_id TEXT REFERENCES targets(id),
     discovery_window_id TEXT REFERENCES discovery_windows(id),
+    run_kind TEXT NOT NULL DEFAULT 'discovery',
     phone_number TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     total_cost REAL NOT NULL DEFAULT 0.0,

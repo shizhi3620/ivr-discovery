@@ -180,7 +180,11 @@ async def generate_target_optimization_report(
         if cached and not cached[0].get("draft"):
             return cached[0]
 
-    sessions = await db.get_sessions_by_target(target.id)
+    sessions = [
+        session
+        for session in await db.get_sessions_by_target(target.id)
+        if session.run_kind == "discovery"
+    ]
     nodes = []
     edges = []
     for session in sessions:

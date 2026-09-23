@@ -200,6 +200,21 @@ async def test_target_report_is_complete_after_all_routes_verified():
             status=NodeStatus.COMPLETED,
         )
     )
+    probe = Session(
+        target_id=target.id,
+        discovery_window_id=window.id,
+        run_kind="probe",
+        phone_number=target.phone_number,
+        status="completed",
+    )
+    await db.create_session(probe)
+    await db.create_node(
+        Node(
+            session_id=probe.id,
+            prompt_text="PROBE-ONLY-NODE",
+            status=NodeStatus.COMPLETED,
+        )
+    )
 
     provider = AsyncMock()
     provider.complete.return_value = json.dumps(_report_payload(), ensure_ascii=False)
@@ -211,3 +226,4 @@ async def test_target_report_is_complete_after_all_routes_verified():
     assert report["draft"] is False
     assert report["missing_routes"] == []
     assert report["target_id"] == target.id
+    assert "PROBE-ONLY-NODE" not in provider.complete.call_args.args[0]

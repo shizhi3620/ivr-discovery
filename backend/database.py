@@ -31,6 +31,12 @@ async def init_db():
         await _ensure_column(
             db,
             "sessions",
+            "run_kind",
+            "TEXT NOT NULL DEFAULT 'discovery'",
+        )
+        await _ensure_column(
+            db,
+            "sessions",
             "discovery_window_id",
             "TEXT REFERENCES discovery_windows(id)",
         )
@@ -273,15 +279,16 @@ async def create_session(session: Session):
         await db.execute(
             """
             INSERT INTO sessions
-                (id, target_id, discovery_window_id, phone_number, status,
-                 total_cost, counted_calls, planned_route, override_reason,
-                 started_at, ended_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, target_id, discovery_window_id, run_kind, phone_number,
+                 status, total_cost, counted_calls, planned_route,
+                 override_reason, started_at, ended_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session.id,
                 session.target_id,
                 session.discovery_window_id,
+                session.run_kind,
                 session.phone_number,
                 session.status.value,
                 session.total_cost,
