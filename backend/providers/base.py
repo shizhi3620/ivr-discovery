@@ -36,6 +36,17 @@ TERMINAL_STATUSES = frozenset(
     }
 )
 
+# Plan token marking a dedicated no-input timeout probe (ADR 0041). A DTMF
+# path whose last "w"-separated token is NO_INPUT_TOKEN navigates the
+# preceding keys, then keeps listening without further input until the IVR
+# hangs up. "n" never collides with a real DTMF key (digits, *, # only).
+NO_INPUT_TOKEN = "n"
+
+
+def is_no_input_path(dtmf_path: str) -> bool:
+    """Return True when a DTMF path ends in the no-input probe token."""
+    return bool(dtmf_path) and dtmf_path.split("w")[-1] == NO_INPUT_TOKEN
+
 TranscriptCallback = Callable[[str], Optional[Awaitable[None]]]
 
 
@@ -118,4 +129,12 @@ class TelephonyProvider(Protocol):
 
     async def stop_call(self, call_id: str) -> None:
         """End an in-progress call. Must be idempotent."""
+        ...
+
+    def mark_call_recording(self, call_id: str, retention_class: str) -> None:
+        """Tag the call's local recording with a retention class (ADR 0029/0042).
+
+        Providers that do not keep local recordings (e.g. cloud vendors) treat
+        this as a no-op.
+        """
         ...

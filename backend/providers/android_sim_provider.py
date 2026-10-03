@@ -19,6 +19,7 @@ import inspect
 import json
 import logging
 import os
+import time
 import uuid as uuid_lib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -28,8 +29,10 @@ from pathlib import Path
 import websockets
 
 from audio import AudioProvider, AudioProviderError, get_audio_provider
+import recording_retention
 from providers.base import (
     CallResult,
+    NO_INPUT_TOKEN,
     ProviderCapabilities,
     ProviderCapabilityError,
     TranscriptCallback,
@@ -44,6 +47,10 @@ logger = logging.getLogger(__name__)
 
 # How long each DTMF key is held before release, mirroring the verified smoke test.
 DTMF_TONE_MS = 250
+
+# /tmp loses recordings on reboot, which silently voided the ADR 0029/0042
+# retention windows. Keep them next to the backend by default (gitignored).
+_DEFAULT_RECORDING_DIR = str(Path(__file__).resolve().parents[1] / "recordings")
 
 
 @dataclass
@@ -65,7 +72,7 @@ class GatewayConfig:
     realtime_dtmf_enabled: bool = True
     dtmf_fallback_delay_ms: int = 16000
     # FreeSWITCH writes one WAV per call into this directory.
-    recording_dir: str = "/tmp/ivr-discovery-recordings"
+    recording_dir: str = _DEFAULT_RECORDING_DIR
     # Wait briefly for bgapi originate to create a visible channel.
     channel_lookup_timeout: float = 10.0
     # Wait this long for the gateway leg to accept uuid_record.
@@ -83,6 +90,25 @@ class GatewayConfig:
     # Navigation: how long a hold/quality phrase may be followed by the real
     # menu before it is treated as a terminal human boundary.
     human_boundary_menu_grace_ms: int = 12000
+    # No-input timeout probing (ADR 0041). On branch calls, hold the target key
+    # at the final menu and stay silent until the first "press any key"
+    # reminder, answer it, then continue navigation ("hitchhike" evidence). A
+    # path ending in the no-input token runs a dedicated probe that keeps
+    # listening until the IVR hangs up.
+    timeout_probe_enabled: bool = False
+    # Key sent in answer to a "press any key" reminder. "0" often means
+    # operator and the menu keys are real options, so use a neutral digit.
+    any_key_value: str = "9"
+    # How long the hitchhike phase waits for the first reminder before giving
+    # up and pressing the target key anyway.
+    any_key_prompt_wait_s: float = 75.0
+    # Upper bound for a dedicated no-input probe call waiting for the IVR to
+    # hang up on its own.
+    # Two full no-input cycles (menu replays, reminders, keypress answer,
+    # second cycle to remote hangup) need roughly 4 minutes of observation.
+    # Navigation (~45 s) + this budget must stay under ~312 s so the
+    # mono-downmixed recording fits Tencent's 5 MB file-ASR limit.
+    timeout_probe_max_s: float = 260.0
 
     @classmethod
     def from_env(cls, env: dict | None = None) -> "GatewayConfig":
@@ -113,7 +139,7 @@ class GatewayConfig:
             dtmf_fallback_delay_ms=int(
                 source.get("CALL_DTMF_FALLBACK_DELAY_MS", "16000")
             ),
-            recording_dir=source.get("CALL_RECORDING_DIR", "/tmp/ivr-discovery-recordings"),
+            recording_dir=source.get("CALL_RECORDING_DIR", _DEFAULT_RECORDING_DIR),
             channel_lookup_timeout=float(
                 source.get("CALL_CHANNEL_LOOKUP_TIMEOUT", "10")
             ),
@@ -140,6 +166,18 @@ class GatewayConfig:
             ),
             human_boundary_menu_grace_ms=int(
                 source.get("CALL_HUMAN_BOUNDARY_MENU_GRACE_MS", "12000")
+            ),
+            timeout_probe_enabled=source.get(
+                "CALL_TIMEOUT_PROBE_ENABLED",
+                "0",
+            ).lower()
+            in ("1", "true", "yes"),
+            any_key_value=source.get("CALL_ANY_KEY_VALUE", "9"),
+            any_key_prompt_wait_s=float(
+                source.get("CALL_ANY_KEY_PROMPT_WAIT_S", "75")
+            ),
+            timeout_probe_max_s=float(
+                source.get("CALL_TIMEOUT_PROBE_MAX_S", "150")
             ),
         )
 
@@ -318,7 +356,51 @@ class AndroidSimGatewayProvider:
         realtime = self._realtime_results.get(call_id)
         if realtime:
             result.realtime_fault = str(realtime.get("fault") or "")
+        self._classify_call_recording(call_id, result)
         return result
+
+    def mark_call_recording(self, call_id: str, retention_class: str) -> None:
+        """Override a call recording's retention class (ADR 0029/0042).
+
+        The retention module enforces stricter-wins, so a discovery-layer
+        "human" marking always prevails over an earlier provider guess.
+        """
+        recording_path = self._recording_path(call_id)
+        if not recording_path.is_file():
+            return
+        try:
+            recording_retention.classify_recording(
+                Path(self.config.recording_dir),
+                recording_path.name,
+                retention_class,
+            )
+        except Exception as exc:  # noqa: BLE001 - retention never breaks a call
+            logger.warning(
+                "Failed to mark recording %s as %s: %s",
+                recording_path.name,
+                retention_class,
+                exc,
+            )
+
+    def _classify_call_recording(self, call_id: str, result: CallResult) -> None:
+        realtime = self._realtime_results.get(call_id) or {}
+        events = realtime.get("events") or []
+        event_types = {
+            event.get("event_type")
+            for event in events
+            if isinstance(event, dict)
+        }
+        retention_class = recording_retention.CLASS_MENU
+        if (
+            "human_boundary" in event_types
+            or result.realtime_fault == "human_boundary"
+        ):
+            retention_class = recording_retention.CLASS_HUMAN
+        elif realtime.get("no_input_probe") or result.realtime_fault:
+            # Exploration evidence (ADR 0042): timeout probes, failed
+            # navigation, unexpected terminals.
+            retention_class = recording_retention.CLASS_EVIDENCE
+        self.mark_call_recording(call_id, retention_class)
 
     async def get_call(self, call_id: str) -> CallResult:
         result = await self._get_call(call_id)
@@ -372,60 +454,17 @@ class AndroidSimGatewayProvider:
 
     async def _navigate_realtime(self, call_id: str, sequence: str) -> None:
         """Wait for each menu prompt, then inject the requested DTMF key."""
-        keys = [key for key in sequence.split("w") if key]
+        tokens = [key for key in sequence.split("w") if key]
+        dedicated_probe = bool(tokens) and tokens[-1] == NO_INPUT_TOKEN
+        keys = tokens[:-1] if dedicated_probe else tokens
         events: list[dict] = []
         fault = ""
         try:
             for key_index, key in enumerate(keys):
-                await self._start_realtime_stream(
-                    call_id,
-                    target_key=key,
-                    menu_completion_ms=15000,
-                    no_speech_timeout_ms=30000,
-                    allow_target_key_fallback=(key == "2"),
-                    human_boundary_menu_grace_ms=(
-                        self.config.human_boundary_menu_grace_ms
-                    ),
+                event = await self._await_navigation_event(
+                    call_id, key, key_index=key_index, keys=keys
                 )
-                terminal_types = {
-                    "dtmf_ready",
-                    "human_boundary",
-                    "unknown_boundary",
-                    "technical_unknown",
-                    "asr_error",
-                }
-                event = None
-                fallback_for_key = (
-                    key == "2"
-                    and key_index == 1
-                    and keys[0] == "1"
-                )
-                timeout = (
-                    self.config.dtmf_fallback_delay_ms / 1000
-                    if fallback_for_key
-                    else 35
-                )
-                try:
-                    event = await asyncio.wait_for(
-                        self._next_realtime_event(
-                            call_id,
-                            terminal_types=terminal_types,
-                        ),
-                        timeout=timeout,
-                    )
-                except TimeoutError:
-                    if not fallback_for_key:
-                        raise
-                    logger.warning(
-                        "Timed DTMF fallback for known 1w2 path after %d ms",
-                        self.config.dtmf_fallback_delay_ms,
-                    )
-                    event = {
-                        "event_type": "timed_fallback",
-                        "key": key,
-                    }
                 events.append(event)
-                await self._stop_realtime_stream(call_id)
                 if event.get("event_type") not in (
                     "dtmf_ready",
                     "timed_fallback",
@@ -433,6 +472,48 @@ class AndroidSimGatewayProvider:
                     fault = str(event.get("event_type") or "realtime navigation failed")
                     await self.stop_call(call_id)
                     return
+                is_last_key = key_index == len(keys) - 1
+                if (
+                    is_last_key
+                    and not dedicated_probe
+                    and self.config.timeout_probe_enabled
+                ):
+                    # Hitchhike (ADR 0041): hold the target key, stay silent
+                    # until the first "press any key" reminder, answer it, then
+                    # re-acquire the replayed menu before pressing the key.
+                    reminder = await self._await_any_key_prompt(call_id)
+                    events.append(reminder)
+                    if reminder.get("event_type") == "any_key_prompt":
+                        await asyncio.to_thread(
+                            self._run_api,
+                            f"uuid_send_dtmf {call_id} {self.config.any_key_value}",
+                        )
+                        logger.info(
+                            "Answered any-key reminder with %s on call %s",
+                            self.config.any_key_value,
+                            call_id,
+                        )
+                        events.append(
+                            {
+                                "event_type": "any_key_sent",
+                                "key": self.config.any_key_value,
+                            }
+                        )
+                        await asyncio.sleep(0.3)
+                        event = await self._await_navigation_event(
+                            call_id, key, key_index=key_index, keys=keys
+                        )
+                        events.append(event)
+                        if event.get("event_type") not in (
+                            "dtmf_ready",
+                            "timed_fallback",
+                        ):
+                            fault = str(
+                                event.get("event_type")
+                                or "realtime navigation failed after any-key"
+                            )
+                            await self.stop_call(call_id)
+                            return
                 await asyncio.to_thread(
                     self._run_api,
                     f"uuid_send_dtmf {call_id} {event['key']}",
@@ -440,49 +521,62 @@ class AndroidSimGatewayProvider:
                 logger.info("Realtime sent DTMF %s on call %s", event["key"], call_id)
                 await asyncio.sleep(0.3)
 
-            # Observe the resulting node without sending another key. Both the
-            # Mandarin and the English submenus may announce a hold/quality
-            # message, then a real menu, then repeated timeout reminders, so
-            # keep a long observation window and do not treat a hold phrase as
-            # a terminal human boundary during this phase.
-            observation_menu_ms = self.config.observation_menu_completion_ms
-            observation_no_speech_ms = self.config.observation_no_speech_ms
-            observation_timeout = self.config.observation_timeout
-            await self._start_realtime_stream(
-                call_id,
-                target_key=None,
-                menu_completion_ms=observation_menu_ms,
-                no_speech_timeout_ms=observation_no_speech_ms,
-                allow_target_key_fallback=False,
-                hold_through_human_boundary=True,
-            )
-            try:
-                observation = await asyncio.wait_for(
-                    self._next_realtime_event(
-                        call_id,
-                        terminal_types={
-                            "human_boundary",
-                            "unknown_boundary",
-                            "technical_unknown",
-                            "asr_error",
-                            "stream_stopped",
-                        },
-                    ),
-                    timeout=observation_timeout,
+            if dedicated_probe:
+                # Dedicated no-input probe (ADR 0041): stay silent and keep
+                # listening until the IVR ends the call itself.
+                observation = await self._observe_until_remote_hangup(call_id)
+                events.append(observation)
+                if observation.get("event_type") in (
+                    "technical_unknown",
+                    "asr_error",
+                ):
+                    fault = str(observation.get("event_type"))
+                await self.stop_call(call_id)
+            else:
+                # Observe the resulting node without sending another key. Both the
+                # Mandarin and the English submenus may announce a hold/quality
+                # message, then a real menu, then repeated timeout reminders, so
+                # keep a long observation window and do not treat a hold phrase as
+                # a terminal human boundary during this phase.
+                observation_menu_ms = self.config.observation_menu_completion_ms
+                observation_no_speech_ms = self.config.observation_no_speech_ms
+                observation_timeout = self.config.observation_timeout
+                await self._start_realtime_stream(
+                    call_id,
+                    target_key=None,
+                    menu_completion_ms=observation_menu_ms,
+                    no_speech_timeout_ms=observation_no_speech_ms,
+                    allow_target_key_fallback=False,
+                    hold_through_human_boundary=True,
+                    detect_any_key_prompt=self.config.timeout_probe_enabled,
                 )
-            except Exception as exc:
-                observation = {
-                    "event_type": "observation_timeout",
-                    "error": str(exc),
-                }
-            events.append(observation)
-            await self._stop_realtime_stream(call_id)
-            if observation.get("event_type") in (
-                "human_boundary",
-                "asr_error",
-            ):
-                fault = str(observation.get("event_type"))
-            await self.stop_call(call_id)
+                try:
+                    observation = await asyncio.wait_for(
+                        self._next_realtime_event(
+                            call_id,
+                            terminal_types={
+                                "human_boundary",
+                                "unknown_boundary",
+                                "technical_unknown",
+                                "asr_error",
+                                "stream_stopped",
+                            },
+                        ),
+                        timeout=observation_timeout,
+                    )
+                except Exception as exc:
+                    observation = {
+                        "event_type": "observation_timeout",
+                        "error": str(exc),
+                    }
+                events.append(observation)
+                await self._stop_realtime_stream(call_id)
+                if observation.get("event_type") in (
+                    "human_boundary",
+                    "asr_error",
+                ):
+                    fault = str(observation.get("event_type"))
+                await self.stop_call(call_id)
         except Exception as exc:
             fault = f"{type(exc).__name__}: {exc}"
             logger.exception("Realtime navigation failed on call %s", call_id)
@@ -495,7 +589,172 @@ class AndroidSimGatewayProvider:
             self._realtime_results[call_id] = {
                 "fault": fault,
                 "events": events,
+                "no_input_probe": dedicated_probe,
             }
+
+    async def _await_navigation_event(
+        self,
+        call_id: str,
+        key: str,
+        *,
+        key_index: int,
+        keys: list[str],
+    ) -> dict:
+        """Open a navigation stream for one key and wait for its decision."""
+        await self._start_realtime_stream(
+            call_id,
+            target_key=key,
+            menu_completion_ms=15000,
+            no_speech_timeout_ms=30000,
+            allow_target_key_fallback=(key == "2"),
+            human_boundary_menu_grace_ms=(
+                self.config.human_boundary_menu_grace_ms
+            ),
+        )
+        terminal_types = {
+            "dtmf_ready",
+            "human_boundary",
+            "unknown_boundary",
+            "technical_unknown",
+            "asr_error",
+        }
+        fallback_for_key = (
+            key == "2"
+            and key_index == 1
+            and keys[0] == "1"
+        )
+        timeout = (
+            self.config.dtmf_fallback_delay_ms / 1000
+            if fallback_for_key
+            else 35
+        )
+        try:
+            event = await asyncio.wait_for(
+                self._next_realtime_event(
+                    call_id,
+                    terminal_types=terminal_types,
+                ),
+                timeout=timeout,
+            )
+        except TimeoutError:
+            if not fallback_for_key:
+                raise
+            logger.warning(
+                "Timed DTMF fallback for known 1w2 path after %d ms",
+                self.config.dtmf_fallback_delay_ms,
+            )
+            event = {
+                "event_type": "timed_fallback",
+                "key": key,
+            }
+        finally:
+            await self._stop_realtime_stream(call_id)
+        return event
+
+    async def _await_any_key_prompt(self, call_id: str) -> dict:
+        """Listen silently for the first "press any key" reminder (ADR 0041)."""
+        await self._start_realtime_stream(
+            call_id,
+            target_key=None,
+            menu_completion_ms=self.config.observation_menu_completion_ms,
+            no_speech_timeout_ms=self.config.observation_no_speech_ms,
+            allow_target_key_fallback=False,
+            hold_through_human_boundary=True,
+            detect_any_key_prompt=True,
+        )
+        try:
+            event = await asyncio.wait_for(
+                self._next_realtime_event(
+                    call_id,
+                    terminal_types={
+                        "any_key_prompt",
+                        "unknown_boundary",
+                        "technical_unknown",
+                        "asr_error",
+                        "stream_stopped",
+                    },
+                ),
+                timeout=self.config.any_key_prompt_wait_s,
+            )
+        except Exception as exc:
+            event = {"event_type": "any_key_prompt_timeout", "error": str(exc)}
+        finally:
+            await self._stop_realtime_stream(call_id)
+        return event
+
+    async def _observe_until_remote_hangup(self, call_id: str) -> dict:
+        """Dedicated no-input probe (ADR 0041).
+
+        Stay silent through the menu replays and the first "press any key"
+        reminder; answer the final reminder (仍然听不见…) with one keypress,
+        then stay silent again until the IVR hangs up. The keypress probes how
+        the IVR behaves when a caller responds at the last moment.
+        """
+        await self._start_realtime_stream(
+            call_id,
+            target_key=None,
+            menu_completion_ms=self.config.observation_menu_completion_ms,
+            no_speech_timeout_ms=self.config.observation_no_speech_ms,
+            allow_target_key_fallback=False,
+            hold_through_human_boundary=True,
+            detect_any_key_prompt=True,
+            detect_final_reminder=True,
+        )
+        started = time.monotonic()
+        budget = self.config.timeout_probe_max_s
+        answered = False
+        try:
+            event = await asyncio.wait_for(
+                self._next_realtime_event(
+                    call_id,
+                    terminal_types={
+                        "final_any_key_prompt",
+                        "stream_stopped",
+                        "technical_unknown",
+                        "asr_error",
+                    },
+                ),
+                timeout=budget,
+            )
+            if event.get("event_type") == "final_any_key_prompt":
+                answered = True
+                logger.info(
+                    "No-input probe answering final reminder with key %s on call %s",
+                    self.config.any_key_value,
+                    call_id,
+                )
+                await asyncio.to_thread(
+                    self._run_api,
+                    f"uuid_send_dtmf {call_id} {self.config.any_key_value}",
+                )
+                remaining = budget - (time.monotonic() - started)
+                event = await asyncio.wait_for(
+                    self._next_realtime_event(
+                        call_id,
+                        terminal_types={
+                            "stream_stopped",
+                            "technical_unknown",
+                            "asr_error",
+                        },
+                    ),
+                    timeout=max(1.0, remaining),
+                )
+                event["answered_final_reminder"] = True
+        except Exception as exc:
+            event = {
+                "event_type": "timeout_probe_timeout",
+                "error": str(exc),
+                "answered_final_reminder": answered,
+            }
+        finally:
+            await self._stop_realtime_stream(call_id)
+        if event.get("event_type") == "stream_stopped":
+            logger.info(
+                "No-input probe captured remote hangup on call %s (answered=%s)",
+                call_id,
+                event.get("answered_final_reminder", False),
+            )
+        return event
 
     async def _start_realtime_stream(
         self,
@@ -507,6 +766,8 @@ class AndroidSimGatewayProvider:
         allow_target_key_fallback: bool,
         hold_through_human_boundary: bool = False,
         human_boundary_menu_grace_ms: int = 0,
+        detect_any_key_prompt: bool = False,
+        detect_final_reminder: bool = False,
     ) -> None:
         metadata = json.dumps(
             {
@@ -523,6 +784,8 @@ class AndroidSimGatewayProvider:
                 "allow_target_key_fallback": allow_target_key_fallback,
                 "hold_through_human_boundary": hold_through_human_boundary,
                 "human_boundary_menu_grace_ms": human_boundary_menu_grace_ms,
+                "detect_any_key_prompt": detect_any_key_prompt,
+                "detect_final_reminder": detect_final_reminder,
                 "boundary_cancel_window_ms": self.config.boundary_cancel_window_ms,
                 "automated_notice_extension_ms": (
                     self.config.automated_notice_extension_ms

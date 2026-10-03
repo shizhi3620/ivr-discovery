@@ -66,6 +66,10 @@ class BlandProvider:
     async def stop_call(self, call_id: str) -> None:
         await bland_client.stop_call(call_id)
 
+    def mark_call_recording(self, call_id: str, retention_class: str) -> None:
+        # Bland keeps recordings vendor-side; nothing local to classify.
+        return
+
     def _to_result(self, call_id: str, data: dict) -> CallResult:
         return CallResult(
             call_id=call_id,

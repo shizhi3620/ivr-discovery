@@ -949,3 +949,161 @@ async def test_navigation_still_stops_on_hold_phrase_with_no_menu():
     await engine.close()
 
     assert [e["event_type"] for e in events if e["event_type"] == "human_boundary"] == ["human_boundary"]
+
+
+@pytest.mark.asyncio
+async def test_any_key_prompt_patterns():
+    from realtime.decision import has_any_key_prompt
+
+    assert has_any_key_prompt("若要继续，请按任意键。否则，我将需要结束这通话。")
+    assert has_any_key_prompt("非常抱歉，仍然听不见任何声音。若要继续，请按任意键。")
+    assert has_any_key_prompt("Press any key to continue")
+    # The no-input announcement alone is not a press-any-key reminder.
+    assert not has_any_key_prompt("我没有检测到按键输入")
+    assert not has_any_key_prompt("如需咨询账单或资费相关问题，请按1")
+    assert not has_any_key_prompt("普通话按1")
+
+
+@pytest.mark.asyncio
+async def test_decision_emits_any_key_prompt_once_when_enabled():
+    events: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        events.append(event)
+
+    engine = RealtimeDecisionEngine(
+        channel_uuid="channel",
+        exploration_call_id="call",
+        target_key=None,
+        on_event=on_event,
+        silence_ms=20,
+        menu_completion_ms=10000,
+        no_speech_timeout_ms=10000,
+        detect_any_key_prompt=True,
+    )
+    await engine.start()
+    await engine.feed("若要继续，请按任意键", is_final=False)
+    await engine.feed("若要继续，请按任意键", is_final=True)
+    await engine.close()
+
+    prompts = [e for e in events if e["event_type"] == "any_key_prompt"]
+    assert len(prompts) == 1
+    assert "按任意键" in prompts[0]["text"]
+    # Non-terminal: the engine must not stop on a reminder.
+    assert not any(
+        e["event_type"]
+        in ("human_boundary", "unknown_boundary", "technical_unknown")
+        for e in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_decision_ignores_any_key_prompt_when_disabled():
+    events: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        events.append(event)
+
+    engine = RealtimeDecisionEngine(
+        channel_uuid="channel",
+        exploration_call_id="call",
+        target_key=None,
+        on_event=on_event,
+        silence_ms=20,
+        menu_completion_ms=10000,
+        no_speech_timeout_ms=10000,
+    )
+    await engine.start()
+    await engine.feed("若要继续，请按任意键", is_final=True)
+    await engine.close()
+
+    assert not any(e["event_type"] == "any_key_prompt" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_final_reminder_patterns():
+    from realtime.decision import is_final_no_input_reminder
+
+    # Operator-verified 2026-10-03 (ADR 0041): the terminal warning is the
+    # "否则…结束…通话" fragment; ASR may deliver it alone or attached to the
+    # press-any-key sentence.
+    assert is_final_no_input_reminder("否则，我将需要结束这通话。")
+    assert is_final_no_input_reminder("否则我将结束本次通话")
+    assert is_final_no_input_reminder(
+        "若要继续，请按任意键。否则，我将需要结束这通话。"
+    )
+    # The "仍然听不见" line is a later replay lead-in, NOT the terminal point:
+    # answering there starts another menu cycle and hides the real tail.
+    assert not is_final_no_input_reminder("非常抱歉，仍然听不见任何声音。")
+    assert not is_final_no_input_reminder(
+        "非常抱歉，仍然听不见任何声音。若要继续，请按任意键。"
+    )
+    assert not is_final_no_input_reminder("仍然听不到您的声音")
+    # First reminder and plain replay lines must not be treated as final.
+    assert not is_final_no_input_reminder("很抱歉，如果您还在线上，我听不见您的声音。")
+    assert not is_final_no_input_reminder("若要继续，请按任意键。")
+    assert not is_final_no_input_reminder("我没有检测到按键输入")
+    assert not is_final_no_input_reminder("仍然没有检测到按键输入")
+
+
+@pytest.mark.asyncio
+async def test_decision_emits_final_reminder_once_when_enabled():
+    events: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        events.append(event)
+
+    engine = RealtimeDecisionEngine(
+        channel_uuid="channel",
+        exploration_call_id="call",
+        target_key=None,
+        on_event=on_event,
+        silence_ms=20,
+        menu_completion_ms=10000,
+        no_speech_timeout_ms=10000,
+        detect_any_key_prompt=True,
+        detect_final_reminder=True,
+    )
+    await engine.start()
+    # The real terminal warning arrives as three consecutive ASR fragments.
+    await engine.feed("很抱歉，如果您还在线上，我听不见您的声音。", is_final=True)
+    await engine.feed("若要继续，请按任意键。", is_final=True)
+    await engine.feed("否则，我将需要结束这通话。", is_final=True)
+    # A repeated fragment must not re-emit the terminal event.
+    await engine.feed("否则，我将需要结束这通话。", is_final=True)
+    await engine.close()
+
+    finals = [e for e in events if e["event_type"] == "final_any_key_prompt"]
+    assert len(finals) == 1
+    assert "否则" in finals[0]["text"] and "结束" in finals[0]["text"]
+    # The reminder lines also fire the plain any-key prompt (once overall).
+    assert len([e for e in events if e["event_type"] == "any_key_prompt"]) == 1
+    # Non-terminal: the engine must keep listening for the hangup.
+    assert not any(
+        e["event_type"]
+        in ("human_boundary", "unknown_boundary", "technical_unknown")
+        for e in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_decision_ignores_final_reminder_when_disabled():
+    events: list[dict] = []
+
+    async def on_event(event: dict) -> None:
+        events.append(event)
+
+    engine = RealtimeDecisionEngine(
+        channel_uuid="channel",
+        exploration_call_id="call",
+        target_key=None,
+        on_event=on_event,
+        silence_ms=20,
+        menu_completion_ms=10000,
+        no_speech_timeout_ms=10000,
+    )
+    await engine.start()
+    await engine.feed("否则，我将需要结束这通话。", is_final=True)
+    await engine.close()
+
+    assert not any(e["event_type"] == "final_any_key_prompt" for e in events)

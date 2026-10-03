@@ -94,7 +94,7 @@ function App() {
   const [edges, setEdges] = useState<IVREdge[]>([]);
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [view, setView] = useState<'tree' | 'report'>('tree');
+  const [view, setView] = useState<'tree' | 'report' | 'final-report'>('tree');
   const [report, setReport] = useState<OptimizationReport | null>(null);
   const [reportLoading, setReportLoading] = useState(false);
   const [reportError, setReportError] = useState<string | null>(null);
@@ -395,6 +395,18 @@ function App() {
               >
                 Tree
               </button>
+              {session.phone_number === '4006668800' && (
+                <button
+                  onClick={() => setView('final-report')}
+                  className={`px-3 py-1 text-xs rounded-md transition-colors ${
+                    view === 'final-report'
+                      ? 'bg-gray-800 text-white'
+                      : 'text-gray-500 hover:text-gray-200'
+                  }`}
+                >
+                  最终报告
+                </button>
+              )}
               <button
                 onClick={() => {
                   setView('report');
@@ -439,7 +451,13 @@ function App() {
       {/* Tree + Detail Panel */}
       <main className="flex-1 flex overflow-hidden">
         <div className="flex-1 relative">
-          {view === 'report' ? (
+          {view === 'final-report' ? (
+            <iframe
+              src="/api/final-reports/report-4006668800.html"
+              title="Apple 4006668800 最终优化报告"
+              className="w-full h-full border-0 bg-white"
+            />
+          ) : view === 'report' ? (
             <ReportView
               sessionId={session?.id ?? null}
               report={report}

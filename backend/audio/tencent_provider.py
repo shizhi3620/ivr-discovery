@@ -37,6 +37,29 @@ JSON_CONTENT_TYPE = "application/json"
 MAX_LOCAL_AUDIO_BYTES = 5 * 1024 * 1024
 
 
+async def _downmix_to_mono(path: Path) -> Path:
+    """Downmix a stereo WAV to 8 kHz mono PCM via afconvert (CoreAudio).
+
+    The gateway records both call legs as 8 kHz stereo; Tencent's file ASR
+    caps local audio at 5 MB (~156 s stereo, ~312 s mono). A mono downmix
+    halves the size without losing speech. The derivative lands next to the
+    original as ``<name>.mono.wav``; the original is kept for evidence.
+    """
+    target = path.with_suffix(".mono.wav")
+    proc = await asyncio.create_subprocess_exec(
+        "afconvert", "-f", "WAVE", "-d", "LEI16@8000", "-c", "1",
+        str(path), str(target),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise AudioProviderError(
+            f"afconvert failed for {path}: {stderr.decode(errors='replace')}"
+        )
+    return target
+
+
 class TencentAudioProvider:
     """Tencent Cloud 8 kHz Mandarin ASR and speech synthesis."""
 
@@ -118,14 +141,23 @@ class TencentAudioProvider:
 
         if not audio:
             raise AudioProviderError(f"Call recording is empty: {path}")
+        channel_num = self.asr_channel_num
         if len(audio) > MAX_LOCAL_AUDIO_BYTES:
-            raise AudioProviderError(
-                f"Call recording exceeds Tencent's 5 MB local-audio limit: {path}"
-            )
+            # Gateway recordings are 8 kHz stereo, where 5 MB is only ~156 s —
+            # long timeout-observation calls exceed it. A mono downmix halves
+            # the size and keeps all speech, so retry once with ChannelNum=1.
+            path = await _downmix_to_mono(path)
+            audio = await asyncio.to_thread(path.read_bytes)
+            if len(audio) > MAX_LOCAL_AUDIO_BYTES:
+                raise AudioProviderError(
+                    "Call recording exceeds Tencent's 5 MB local-audio limit "
+                    f"even after mono downmix: {path}"
+                )
+            channel_num = 1
 
         payload = {
             "EngineModelType": self.asr_engine_model,
-            "ChannelNum": self.asr_channel_num,
+            "ChannelNum": channel_num,
             "ResTextFormat": 0,
             "SourceType": 1,
             "Data": base64.b64encode(audio).decode("ascii"),

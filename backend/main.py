@@ -32,6 +32,18 @@ app.add_middleware(
 async def startup():
     await db.init_db()
     logger.info("Database initialized")
+    # Enforce the ADR 0029/0042 recording retention windows on every boot.
+    from recording_retention import sweep_expired
+
+    recording_dir = Path(
+        os.getenv(
+            "CALL_RECORDING_DIR",
+            str(Path(__file__).resolve().parent / "recordings"),
+        )
+    )
+    deleted = sweep_expired(recording_dir)
+    if deleted:
+        logger.info("Recording retention sweep removed %d file(s)", len(deleted))
 
 
 async def send_json(ws: WebSocket, data: dict):
@@ -393,6 +405,22 @@ async def create_target_optimization_report(
         logger.exception("Failed to generate target optimization report")
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"report": report, "business_context": business_context}
+
+
+@app.get("/api/final-reports/{filename}")
+async def get_final_report(filename: str):
+    """Serve a curated five-chapter HTML report from docs/.
+
+    Only files matching report-*.html directly inside docs/ are served; the
+    basename normalisation strips any path traversal attempt.
+    """
+    safe_name = Path(filename).name
+    if not safe_name.startswith("report-") or not safe_name.endswith(".html"):
+        raise HTTPException(status_code=404, detail="Report not found")
+    path = Path(__file__).parent.parent / "docs" / safe_name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Report not found")
+    return FileResponse(path, media_type="text/html; charset=utf-8")
 
 
 @app.post("/api/targets/{target_id}/budget-increase")

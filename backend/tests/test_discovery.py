@@ -445,3 +445,156 @@ class TestExploreNodeProviderBoundary:
         summary = await db.get_budget_summary(target.id, window.id)
         assert summary["window_used"] == 1
         assert summary["target_used"] == 1
+
+
+class TestNoInputProbeChild:
+    """_maybe_create_no_input_child attaches a systematic timeout branch (ADR 0041)."""
+
+    async def _setup(self, monkeypatch, prompt_text="如需咨询账单，请按1", dtmf_path="1", voice_option=""):
+        from unittest.mock import AsyncMock, MagicMock
+        import discovery
+
+        monkeypatch.setattr(discovery, "NO_INPUT_PROBE_ENABLED", True)
+        session = Session(phone_number="4006668800")
+        await db.create_session(session)
+        parent = Node(
+            session_id=session.id,
+            dtmf_path=dtmf_path,
+            voice_option=voice_option,
+            prompt_text=prompt_text,
+            status=NodeStatus.COMPLETED,
+        )
+        await db.create_node(parent)
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+        return discovery, ws, session, parent
+
+    @pytest.mark.asyncio
+    async def test_creates_probe_child_and_edge(self, monkeypatch):
+        discovery, ws, session, parent = await self._setup(monkeypatch)
+
+        child = await discovery._maybe_create_no_input_child(ws, session, parent)
+
+        assert child is not None
+        assert child.dtmf_path == "1wn"
+        assert child.parent_id == parent.id
+        assert child.status == NodeStatus.PENDING
+        edges = await db.get_edges_by_session(session.id)
+        assert len(edges) == 1
+        assert edges[0].dtmf_key == discovery.NO_INPUT_EDGE_KEY
+        assert edges[0].label == discovery.NO_INPUT_EDGE_LABEL
+
+    @pytest.mark.asyncio
+    async def test_root_parent_uses_bare_token(self, monkeypatch):
+        discovery, ws, session, parent = await self._setup(monkeypatch, dtmf_path="")
+
+        child = await discovery._maybe_create_no_input_child(ws, session, parent)
+
+        assert child is not None
+        assert child.dtmf_path == "n"
+
+    @pytest.mark.asyncio
+    async def test_gate_off_creates_nothing(self, monkeypatch):
+        from unittest.mock import AsyncMock, MagicMock
+        import discovery
+
+        monkeypatch.setattr(discovery, "NO_INPUT_PROBE_ENABLED", False)
+        session = Session(phone_number="4006668800")
+        await db.create_session(session)
+        parent = Node(session_id=session.id, dtmf_path="1", prompt_text="请按1")
+        await db.create_node(parent)
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+
+        child = await discovery._maybe_create_no_input_child(ws, session, parent)
+
+        assert child is None
+        assert len(await db.get_nodes_by_session(session.id)) == 1
+
+    @pytest.mark.asyncio
+    async def test_skips_privacy_consent_prompt(self, monkeypatch):
+        discovery, ws, session, parent = await self._setup(
+            monkeypatch,
+            prompt_text="为了保护您的隐私，我们需要获得您的同意后继续服务",
+        )
+        assert await discovery._maybe_create_no_input_child(ws, session, parent) is None
+
+    @pytest.mark.asyncio
+    async def test_skips_human_queue_prompt(self, monkeypatch):
+        discovery, ws, session, parent = await self._setup(
+            monkeypatch, prompt_text="(human/queue) 正在为您转接人工客服"
+        )
+        assert await discovery._maybe_create_no_input_child(ws, session, parent) is None
+
+    @pytest.mark.asyncio
+    async def test_skips_voice_option_parent(self, monkeypatch):
+        discovery, ws, session, parent = await self._setup(
+            monkeypatch, voice_option="查询账单"
+        )
+        assert await discovery._maybe_create_no_input_child(ws, session, parent) is None
+
+    @pytest.mark.asyncio
+    async def test_skips_no_input_parent(self, monkeypatch):
+        discovery, ws, session, parent = await self._setup(
+            monkeypatch, dtmf_path="1wn"
+        )
+        assert await discovery._maybe_create_no_input_child(ws, session, parent) is None
+
+    @pytest.mark.asyncio
+    async def test_skips_when_probe_path_exists(self, monkeypatch):
+        discovery, ws, session, parent = await self._setup(monkeypatch)
+        existing = Node(session_id=session.id, parent_id=parent.id, dtmf_path="1wn")
+        await db.create_node(existing)
+
+        assert await discovery._maybe_create_no_input_child(ws, session, parent) is None
+        assert len(await db.get_nodes_by_session(session.id)) == 2
+
+
+class TestIsNoInputPath:
+    def test_probe_paths(self):
+        from providers.base import is_no_input_path
+
+        assert is_no_input_path("n")
+        assert is_no_input_path("1wn")
+        assert is_no_input_path("1w2w3wn")
+
+    def test_normal_paths(self):
+        from providers.base import is_no_input_path
+
+        assert not is_no_input_path("")
+        assert not is_no_input_path("1")
+        assert not is_no_input_path("1w2")
+        # "n" is only special as a full token, not inside a digit sequence.
+        assert not is_no_input_path("1w23")
+
+
+class TestProbeRank:
+    def test_probe_sorts_before_menu_children(self):
+        import asyncio
+        import discovery
+
+        probe = Node(session_id="s", dtmf_path="1w1wn")
+        menu_a = Node(session_id="s", dtmf_path="1w1w1")
+        menu_b = Node(session_id="s", dtmf_path="1w1w2")
+
+        assert discovery._probe_rank(probe) == 0
+        assert discovery._probe_rank(menu_a) == 1
+
+        async def pop_order():
+            q: asyncio.PriorityQueue = asyncio.PriorityQueue()
+            for n in (menu_b, menu_a, probe):  # worst-case insertion order
+                await q.put((3, discovery._probe_rank(n), n.id, n))
+            order = []
+            while not q.empty():
+                order.append((await q.get())[3].dtmf_path)
+            return order
+
+        order = asyncio.run(pop_order())
+        assert order[0] == "1w1wn"
+        assert sorted(order[1:]) == ["1w1w1", "1w1w2"]
+
+    def test_root_and_normal_paths_rank_equal(self):
+        import discovery
+
+        assert discovery._probe_rank(Node(dtmf_path="")) == 1
+        assert discovery._probe_rank(Node(dtmf_path="1w2w3")) == 1

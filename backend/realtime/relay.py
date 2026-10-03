@@ -146,6 +146,12 @@ class RealtimeRelay:
                         os.getenv("CALL_HUMAN_BOUNDARY_MENU_GRACE_MS", "12000"),
                     )
                 ),
+                detect_any_key_prompt=bool(
+                    metadata.get("detect_any_key_prompt", False)
+                ),
+                detect_final_reminder=bool(
+                    metadata.get("detect_final_reminder", False)
+                ),
             )
 
             async def on_asr_message(message: dict[str, Any]) -> None:

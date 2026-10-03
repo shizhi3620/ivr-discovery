@@ -16,7 +16,12 @@ from discovery_windows import (
 )
 from models import Session, Node, Edge, NodeStatus, SessionStatus
 from providers import TelephonyProvider, get_provider
-from providers.base import STATUS_BUSY, STATUS_COMPLETED
+from providers.base import (
+    NO_INPUT_TOKEN,
+    STATUS_BUSY,
+    STATUS_COMPLETED,
+    is_no_input_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +31,24 @@ MAX_DEPTH = max(1, int(os.getenv("DISCOVERY_MAX_DEPTH", "5")))
 MIN_TRANSCRIPT_LENGTH = 20  # Retry if transcript is shorter than this
 ROOT_CALL_MAX_DURATION = max(1, int(os.getenv("ROOT_CALL_MAX_DURATION", "60")))
 BRANCH_CALL_MAX_DURATION = max(1, int(os.getenv("BRANCH_CALL_MAX_DURATION", "60")))
+# A dedicated no-input probe (ADR 0041) must outlast the full timeout cycle:
+# menu replays + reminder rounds + the keypress answer at the final reminder
+# + a second cycle, then goodbye and remote hangup. Capped so the recording
+# still fits Tencent's 5 MB file-ASR limit after mono downmix (~312 s at
+# 8 kHz 16-bit mono).
+NO_INPUT_CALL_MAX_DURATION = max(
+    1, int(os.getenv("NO_INPUT_CALL_MAX_DURATION", "310"))
+)
 CALL_COOLDOWN_SECONDS = max(0.0, float(os.getenv("CALL_COOLDOWN_SECONDS", "0")))
+# Systematic no-input timeout exploration (ADR 0041). Gated so existing
+# targets keep their current call budgets unless opted in.
+NO_INPUT_PROBE_ENABLED = os.getenv("DISCOVERY_NO_INPUT_PROBE", "0").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+NO_INPUT_EDGE_KEY = "no-input"
+NO_INPUT_EDGE_LABEL = "无按键超时 / No input timeout"
 
 
 async def send_json(ws: WebSocket, data: dict):
@@ -107,9 +129,16 @@ async def explore_node(
         dtmf_seq = node.dtmf_path or None
         voice_option = node.voice_option or None
 
-        # Root calls get longer to hear full menu; branch calls are shorter
+        # Root calls get longer to hear full menu; branch calls are shorter;
+        # dedicated no-input probes must outlast the whole timeout cycle.
         is_root = not node.parent_id
-        max_dur = ROOT_CALL_MAX_DURATION if is_root else BRANCH_CALL_MAX_DURATION
+        is_no_input = is_no_input_path(node.dtmf_path)
+        if is_no_input:
+            max_dur = NO_INPUT_CALL_MAX_DURATION
+        elif is_root:
+            max_dur = ROOT_CALL_MAX_DURATION
+        else:
+            max_dur = BRANCH_CALL_MAX_DURATION
 
         # Stream live transcript to frontend as it arrives
         async def on_transcript(text: str):
@@ -263,6 +292,30 @@ async def explore_node(
             })
             return []
 
+        if is_no_input:
+            # Dedicated no-input probe (ADR 0041): the transcript replays the
+            # parent's menu, so option parsing would duplicate the parent's
+            # children. Complete the node as a terminal timeout branch.
+            timeout_prompt = (
+                "(timeout) 无输入超时路径 / No-input timeout path"
+            )
+            await db.update_node(
+                node.id,
+                status=NodeStatus.COMPLETED,
+                prompt_text=timeout_prompt,
+                transcript=concatenated,
+                cost=cost,
+                realtime_verified=True,
+            )
+            await send_json(ws, {
+                "type": "node_updated",
+                "node_id": node.id,
+                "status": "completed",
+                "prompt_text": timeout_prompt,
+                "cost": cost,
+            })
+            return []
+
         # Call succeeded — parse transcript
         await db.update_node(
             node.id,
@@ -306,6 +359,9 @@ async def explore_node(
 
         if parsed.get("human_transfer"):
             boundary_prompt = f"(human/queue) {prompt_text or 'Human service boundary'}"
+            # Human-boundary recordings fall under the 24h retention class
+            # (ADR 0029); the parser sees what the realtime layer cannot.
+            provider.mark_call_recording(call_id, "human")
             await db.update_node(
                 node.id,
                 status=NodeStatus.COMPLETED,
@@ -470,7 +526,76 @@ async def create_children(
 
         children.append(child)
 
+    probe_child = await _maybe_create_no_input_child(ws, session, parent)
+    if probe_child is not None:
+        children.append(probe_child)
+
     return children
+
+
+def _is_privacy_consent_prompt(prompt_text: str) -> bool:
+    """Privacy consent gates hang up without a reminder cycle (ADR 0041)."""
+    return "隐私" in prompt_text and "同意" in prompt_text
+
+
+def _probe_rank(node: Node) -> int:
+    """No-input timeout probes sort first within their BFS level (ADR 0041).
+
+    A probe is the decisive evidence for an input node's timeout behavior, so
+    it outranks ordinary menu children of the same depth.
+    """
+    return 0 if is_no_input_path(node.dtmf_path) else 1
+
+
+async def _maybe_create_no_input_child(
+    ws: WebSocket,
+    session: Session,
+    parent: Node,
+) -> Node | None:
+    """Attach a no-input timeout branch to an input node (ADR 0041).
+
+    Skipped for privacy consent prompts (hangup without reminders), human
+    nodes (no timeout semantics, and already-explored human nodes are never
+    re-explored), voice-option nodes (probe navigation is DTMF-only), and
+    parents that already have a probe child.
+    """
+    if not NO_INPUT_PROBE_ENABLED:
+        return None
+    if is_no_input_path(parent.dtmf_path) or parent.voice_option:
+        return None
+    prompt_text = parent.prompt_text or ""
+    if prompt_text.startswith("(human/queue)") or _is_privacy_consent_prompt(
+        prompt_text
+    ):
+        return None
+
+    probe_path = (
+        f"{parent.dtmf_path}w{NO_INPUT_TOKEN}"
+        if parent.dtmf_path
+        else NO_INPUT_TOKEN
+    )
+    siblings = await db.get_nodes_by_session(session.id)
+    if any(node.dtmf_path == probe_path for node in siblings):
+        return None
+
+    child = Node(
+        session_id=session.id,
+        parent_id=parent.id,
+        dtmf_path=probe_path,
+        status=NodeStatus.PENDING,
+    )
+    await db.create_node(child)
+    await send_json(ws, {"type": "node_added", "node": child.model_dump()})
+
+    edge = Edge(
+        from_node_id=parent.id,
+        to_node_id=child.id,
+        dtmf_key=NO_INPUT_EDGE_KEY,
+        label=NO_INPUT_EDGE_LABEL,
+    )
+    await db.create_edge(edge)
+    await send_json(ws, {"type": "edge_added", "edge": edge.model_dump()})
+    return child
 
 
 async def send_session_status(ws: WebSocket, session: Session):
@@ -552,7 +677,7 @@ async def run_discovery(
         started_at=datetime.now(APP_TIMEZONE).isoformat(),
     )
 
-    queue: asyncio.PriorityQueue[tuple[int, str, Node]] = asyncio.PriorityQueue()
+    queue: asyncio.PriorityQueue[tuple[int, int, str, Node]] = asyncio.PriorityQueue()
     nodes_by_id: dict[str, Node] = {}
 
     # Cycle detection: track fingerprints of all menus we've already explored
@@ -580,7 +705,7 @@ async def run_discovery(
                     node.status = NodeStatus.PENDING
                 if node.status == NodeStatus.PENDING:
                     depth = get_node_depth(node, nodes_by_id)
-                    await queue.put((depth, node.id, node))
+                    await queue.put((depth, _probe_rank(node), node.id, node))
                     await send_json(
                         ws,
                         {"type": "node_added", "node": node.model_dump()},
@@ -592,11 +717,11 @@ async def run_discovery(
         await db.create_node(root)
         nodes_by_id[root.id] = root
         await send_json(ws, {"type": "node_added", "node": root.model_dump()})
-        await queue.put((0, root.id, root))  # (depth, id for tiebreak, node)
+        await queue.put((0, 1, root.id, root))  # (depth, probe rank, id tiebreak, node)
 
     async def worker(worker_id: int):
         while True:
-            depth, _, node = await queue.get()
+            depth, _, _, node = await queue.get()
             try:
                 if depth >= MAX_DEPTH:
                     logger.info(f"[W{worker_id}] Skipping {node.id[:8]}... — max depth {depth}")
@@ -637,7 +762,7 @@ async def run_discovery(
                 child_depth = depth + 1
                 for c in children:
                     nodes_by_id[c.id] = c
-                    await queue.put((child_depth, c.id, c))
+                    await queue.put((child_depth, _probe_rank(c), c.id, c))
                 await send_session_status(ws, session)
 
             except Exception:
@@ -757,12 +882,12 @@ async def rediscover_subtree(
     node = await db.get_node(node_id)
 
     start_depth = get_node_depth(node, nodes_by_id)
-    queue: asyncio.PriorityQueue[tuple[int, str, Node]] = asyncio.PriorityQueue()
-    await queue.put((start_depth, node.id, node))
+    queue: asyncio.PriorityQueue[tuple[int, int, str, Node]] = asyncio.PriorityQueue()
+    await queue.put((start_depth, _probe_rank(node), node.id, node))
 
     async def worker(worker_id: int):
         while True:
-            depth, _, n = await queue.get()
+            depth, _, _, n = await queue.get()
             try:
                 if depth >= MAX_DEPTH:
                     await db.update_node(n.id, status=NodeStatus.COMPLETED, prompt_text="Max depth reached")
@@ -795,7 +920,7 @@ async def rediscover_subtree(
                 child_depth = depth + 1
                 for c in children:
                     nodes_by_id[c.id] = c
-                    await queue.put((child_depth, c.id, c))
+                    await queue.put((child_depth, _probe_rank(c), c.id, c))
                 await send_session_status(ws, session)
 
             except Exception:

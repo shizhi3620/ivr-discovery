@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apple 4006668800 IVR 优化报告</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;600;700&family=Noto+Serif+SC:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  /* Layout: single-column report, chapter-numbered sections, DTMF paths in mono */
+  :root {
+    --bg: #f7f6f2;
+    --surface: #ffffff;
+    --fg: #22271f;
+    --muted: #6b7264;
+    --line: #dddacd;
+    --accent: #0d6b57;
+    --accent-soft: #e3efe9;
+    --warn: #a05c00;
+    --warn-soft: #f8ecd8;
+    --bad: #a12c1f;
+    --bad-soft: #f7e3e0;
+    --mono: "SF Mono", ui-monospace, "Cascadia Mono", Menlo, monospace;
+    --body: "Noto Sans SC", -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    --display: "Noto Serif SC", "Songti SC", serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #191c18; --surface: #22261f; --fg: #e4e6dd; --muted: #9aa192;
+      --line: #3a4034; --accent: #4fae93; --accent-soft: #24382f;
+      --warn: #d29a4a; --warn-soft: #3a2f1c; --bad: #d97766; --bad-soft: #3d2622;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #191c18; --surface: #22261f; --fg: #e4e6dd; --muted: #9aa192;
+    --line: #3a4034; --accent: #4fae93; --accent-soft: #24382f;
+    --warn: #d29a4a; --warn-soft: #3a2f1c; --bad: #d97766; --bad-soft: #3d2622;
+    color-scheme: dark;
+  }
+  body {
+    background: var(--bg); color: var(--fg);
+    font-family: var(--body); font-size: 15px; line-height: 1.75;
+  }
+  .wrap { max-width: 46rem; margin: 0 auto; padding: 0 20px; padding-block: 40px 80px; }
+  header.report-head { border-bottom: 2px solid var(--fg); padding-bottom: 18px; margin-bottom: 8px; }
+  .kicker { font-size: 12px; letter-spacing: .18em; color: var(--accent); font-weight: 600; }
+  h1 { font-family: var(--display); font-size: 30px; line-height: 1.3; margin: 8px 0 6px; text-wrap: balance; }
+  .subtitle { color: var(--muted); font-size: 14px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-top: 14px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .meta b { color: var(--fg); font-weight: 600; }
+
+  section { margin-top: 48px; }
+  .chapter { display: flex; align-items: baseline; gap: 12px; border-bottom: 1px solid var(--line); padding-bottom: 8px; margin-bottom: 18px; }
+  .chapter .no { font-family: var(--display); font-size: 26px; color: var(--accent); }
+  h2 { font-family: var(--display); font-size: 21px; margin: 0; text-wrap: balance; }
+  h3 { font-size: 16px; margin: 26px 0 8px; }
+  p { margin: 10px 0; }
+  ul, ol { padding-left: 1.4em; margin: 10px 0; }
+  li { margin: 5px 0; }
+  code, .path { font-family: var(--mono); font-size: .88em; background: var(--accent-soft); color: var(--accent); padding: 1px 5px; border-radius: 4px; }
+  .path { font-weight: 600; }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin: 18px 0; }
+  .stat { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  .stat .v { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stat .k { font-size: 12px; color: var(--muted); }
+
+  .callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 14px 0; }
+  .callout.warn { border-color: var(--warn); background: var(--warn-soft); }
+  .callout.bad { border-color: var(--bad); background: var(--bad-soft); }
+  .callout p { margin: 4px 0; }
+
+  .tree-scroll { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin: 14px 0; }
+  pre.mermaid { margin: 0; font-size: 12px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 12px 0; font-variant-numeric: tabular-nums; }
+  .table-scroll { overflow-x: auto; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: .04em; }
+  td .path { white-space: nowrap; }
+
+  .pill { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 1px 8px; border-radius: 99px; white-space: nowrap; }
+  .pill.p0 { background: var(--bad-soft); color: var(--bad); }
+  .pill.p1 { background: var(--warn-soft); color: var(--warn); }
+  .pill.p2 { background: var(--accent-soft); color: var(--accent); }
+  .pill.day { background: var(--accent-soft); color: var(--accent); }
+  .pill.night { background: var(--warn-soft); color: var(--warn); }
+
+  .timeline { font-family: var(--mono); font-size: 12.5px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; overflow-x: auto; white-space: pre; line-height: 1.9; }
+  footer { margin-top: 64px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+
+  /* The mermaid DAG is authored for a light surface; keep its container light
+     even in dark mode so labels and edge text stay readable. */
+  @media (prefers-color-scheme: dark) {
+    .tree-scroll { background: #f7f6f2; }
+    pre.mermaid { color: #22271f; }
+  }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });
+</script>
+</head>
+<body>
+
+<div class="wrap">
+<header class="report-head">
+  <div class="kicker">IVR 树发现系统 · 优化报告（v4 终版 · 全树完成 · 超时终态实证）</div>
+  <h1>Apple 中国 400-666-8800 电话树全景与昼夜行为模型</h1>
+  <div class="subtitle">五章：树结论 · 问题与根因 · 优化 Backlog · 本土化专题 · 成本与预算</div>
+  <div class="meta">
+    <span>会话 <b>8aef3700</b></span>
+    <span>探索窗口 <b>2026-10-02 白天 + 夜间 · 10-03 白天</b></span>
+    <span>节点 <b>60</b>（完成 60 / 失败 0）</span>
+    <span>真实通话 <b>33 次</b></span>
+  </div>
+</header>
+
+<section>
+  <div class="chapter"><span class="no">一</span><h2>IVR 树结论</h2></div>
+
+  <div class="stats">
+    <div class="stat"><div class="v">5</div><div class="k">最大深度</div></div>
+    <div class="stat"><div class="v">9–21</div><div class="k">人工时段（全年无休）</div></div>
+    <div class="stat"><div class="v">4</div><div class="k">菜单汇合点（DAG）</div></div>
+    <div class="stat"><div class="v">0</div><div class="k">超时转人工（夜间亦无）</div></div>
+    <div class="stat"><div class="v">0</div><div class="k">未完成节点</div></div>
+  </div>
+
+  <div class="callout">
+    <p><b>昼夜行为模型：菜单结构全天不变，变的是终态。</b>同一批菜单 24 小时在线；白天超时后进入"调查同意 → 人工队列"，夜间超时后替换为"已下班 → 短信自助链接 / 官网 / 支持 App / 微信公众号"。夜间另加英文下班 preamble 与强制隐私同意按键两个前置环节。</p>
+  </div>
+
+  <div class="tree-scroll">
+<pre class="mermaid">
+graph TD
+  R["根：隐私同意<br>同意按1 · 结束按2<br>(夜间强制按键)"] -->|1| L["语言选择<br>普通话按1 · English按2"]
+  R -->|2| END1["(夜) 自助渠道播报<br>官网 / 支持App / 微信公众号"]
+  L -->|1 普通话| M["主菜单（全天不变）<br>账单1 · 官网购买2 · 账户3 · 技术4 · 其他5"]
+  L -->|2 English| EN["英文子树<br>全部快速转人工(白天)<br>实测坐席接听"]
+  M -->|1| B1["账单子菜单<br>扣费1 · 订单修改2 · 订单状态3<br>官网新产品4 · 其他5"]
+  M -->|2| B2["订单子菜单（昼实测）<br>订单修改1 · 官网新产品2 · 订单状态3"]
+  M -->|3| B3["账户子菜单<br>账户登录1 · 扣费2 · 其他3"]
+  M -->|4| B4["技术支持 → 产品选择<br>→ 人工队列(昼) / 下班提示(夜)"]
+  M -->|5| CYC["(回主菜单)"]
+  B1 -->|1 扣费| BILL["★B 账单收费菜单<br>不认可收费1 · 订阅2 · 其他3"]
+  B1 -->|2 订单修改| ORD["★A 订单支持菜单<br>促销1 · 取消更改2 · 发票3<br>退货4 · 其他5 · #重播"]
+  B1 -->|4 官网新产品| PROD["★D 产品选择菜单<br>iPhone1 · Vision Pro2 · Watch3<br>iPad4 · Mac5 · 其他6 · #重播"]
+  B2 -->|1 订单修改| ORD
+  B2 -->|2 官网新产品| PROD
+  B2 -->|3 订单状态 (昼)| WEB["(昼) apple.com.cn<br>订单状态自助跳转"]
+  B2 -.->|夜间键3 (失步?)| ORD
+  B2 -.->|夜间键4 (失步?)| BILL
+  PROD -->|无输入: 重播一次后| ENT["延展层<br>个人咨询购买1 · 企业采购6 · 返回9"]
+  B3 -->|1 账户登录| ACCT["★C 账户帮助子菜单<br>恢复1 · 锁定禁用2 · 密码3<br>钓鱼安全4"]
+  B3 -->|2 扣费| BILL
+  B3 -->|3 其他| ACCT
+  BILL -->|昼超时| HUM1["调查同意 → 人工队列<br>+ iCloud/云上贵州告知"]
+  BILL -->|夜超时| SMS1["下班宣告 → 短信自助链接"]
+  ACCT -->|昼超时| HUM1
+  ACCT -->|夜超时| SMS1
+  style ORD fill:#e3efe9,stroke:#0d6b57
+  style BILL fill:#e3efe9,stroke:#0d6b57
+  style ACCT fill:#e3efe9,stroke:#0d6b57
+  style PROD fill:#e3efe9,stroke:#0d6b57
+  style SMS1 fill:#f8ecd8,stroke:#a05c00
+  style HUM1 fill:#f7e3e0,stroke:#a12c1f
+  style WEB fill:#f8ecd8,stroke:#a05c00
+  style ENT fill:#f8ecd8,stroke:#a05c00
+</pre>
+  </div>
+
+  <h3>三个菜单汇合点（树实为 DAG）</h3>
+  <div class="table-scroll">
+  <table>
+    <tr><th>汇合菜单</th><th>实证入口</th><th>证据</th></tr>
+    <tr><td>★A 订单支持菜单<br><span class="path">促销1/取消更改2/发票3/退货4/其他5/#</span></td>
+        <td><span class="path">1-1-1-2</span> · <span class="path">1-1-2-1</span>（昼）· <span class="path">1-1-2-3</span></td>
+        <td>三份独立转写话术一致</td></tr>
+    <tr><td>★B 账单收费菜单<br><span class="path">不认可收费1/订阅2/其他3</span></td>
+        <td><span class="path">1-1-1-1</span>（夜）· <span class="path">1-1-2-4</span>（夜）· <span class="path">1-1-3-2</span>（昼 16:17）</td>
+        <td>昼出现证明非夜间特供；终态随时段变化</td></tr>
+    <tr><td>★C 账户帮助子菜单<br><span class="path">恢复1/锁定禁用2/密码3/钓鱼安全4</span></td>
+        <td><span class="path">1-1-3-1</span> · <span class="path">1-1-3-3</span></td>
+        <td>两份白天转写一致，含"网络钓鱼或安全疑虑"</td></tr>
+    <tr><td>★D 产品选择菜单<br><span class="path">iPhone1/Vision Pro2/Watch3/iPad4/Mac5/其他6/#重播</span></td>
+        <td><span class="path">1-1-1-4</span> · <span class="path">1-1-2-2</span>（昼 17:16）</td>
+        <td>最后一个失败节点重探成功后确认；两条入口键位不同（5 键菜单键 4 / 3 键菜单键 2），汇入同一菜单</td></tr>
+  </table>
+  </div>
+
+  <p><b>关键结论：</b></p>
+  <ul>
+    <li><b>人工入口高度收敛</b>：中文树无直接"转人工"键；所有人工都经"菜单超时 → 调查同意 → 队列"到达，且仅限 9:00–21:00。英文子树则全部快速转人工——语言选择实质是服务分层开关。</li>
+    <li><b>无输入超时行为规范（v4 实证修正）</b>：主菜单 → 重播一次 → 最终提醒"若要继续请按任意键，<b>否则我将结束这通话</b>"；此时按键应答，IVR 还会再重播约两轮（约 60 秒）后播报"<b>我们目前碰到一些技术上的问题，请稍后再来电</b>"再挂断；全程沉默则最终直接挂断。任何层级、任何时段都不存在超时转人工，坐席资源保护到位。</li>
+    <li><b>菜单可重播键仅两处</b>：订单支持菜单与产品选择菜单支持 <code>#</code> 重播，其余层级只能等约 33 秒一轮的超时重播。</li>
+    <li><b>同一菜单随入口改键位</b>：订单服务经主菜单键 1 进入是 5 键版（账单 1/修改 2/状态 3/新产品 4/其他 5），经键 2 进入是 3 键版（修改 1/新产品 2/状态 3）——目的地相同，编号按来电意图重排。</li>
+    <li><b>产品菜单无输入后出现 B2B 分流</b>：产品选择菜单沉默至重播后，追加"个人咨询或购买按 1 · <b>企业采购按 6</b> · 返回按 9"延展层；键 6 在产品菜单内是"所有其他产品"，在延展层是"企业采购"，键位含义随状态变化。</li>
+    <li><b>话术改动的影响面要按 DAG 评估</b>：★A/★B/★C/★D 各有 2–3 条入口路径，改一处菜单影响所有上游分支的来电者。</li>
+  </ul>
+</section>
+
+<section>
+  <div class="chapter"><span class="no">二</span><h2>问题清单与根因</h2></div>
+
+  <h3>探索失败（全部清零：最后节点 10-03 17:16 重探成功）</h3>
+  <div class="table-scroll">
+  <table>
+    <tr><th>节点</th><th>表象</th><th>根因 / 结论</th><th>处置</th></tr>
+    <tr><td><span class="path">1-1-2-2</span> 官网新产品</td>
+        <td>前 3 次失败（夜×2 / 昼×1），<b>第 4 次成功</b></td>
+        <td>"销售专线"假设<b>推翻</b>：成功通话显示该路径正常进入产品选择菜单（与 <span class="path">1-1-1-4</span> 汇合，即 ★D）；前三次分别为夜间英文 preamble、过渡话术 unknown_boundary、ASR 静默的复合技术性失败，不是固定业务行为</td>
+        <td>已完成 ✅</td></tr>
+    <tr><td><span class="path">1-1-2-4</span></td>
+        <td>曾疑似"导航失步"</td>
+        <td><b>修正：非故障</b>——夜间按 4（退款资费）合法进入 ★B 账单菜单</td>
+        <td>数据采信</td></tr>
+    <tr><td><span class="path">1-1-3</span> <span class="path">1-1-4</span></td>
+        <td>technical_unknown（共 3 次）</td>
+        <td>腾讯实时 ASR 会话静默：连接成功但 30 秒零识别，随机发生，次日重试即成功</td>
+        <td>P0 自动重试</td></tr>
+    <tr><td><span class="path">1-1-2-1</span>（夜）</td>
+        <td>导航腿 35s 超时</td>
+        <td>夜间英文下班 preamble（纯语音无按键 35s+）阻断导航腿；白天重试成功</td>
+        <td>P0 容忍无按键播报</td></tr>
+  </table>
+  </div>
+
+  <h3>数据质量修正（本次全面重梳发现）</h3>
+  <ul>
+    <li><b>1w1w2 菜单解析错误</b>：DeepSeek 把主菜单话术复制给了它。v2 曾据夜间探针把真实菜单改为 5 选项；<b>v3 再次修正</b>——10-03 白天成功通话实测经主菜单键 2 进入的是 3 选项（订单修改 1 / 官网新产品 2 / 订单状态 3）；夜间探针听到的 5 选项实为键 1 入口版本（B1），说明那次夜间导航发生了入口偏移。</li>
+    <li><b>"循环"标签误用</b>：<span class="path">1-1-2-1</span> 标记 (cycle) 实为汇入 ★A 订单支持菜单——DAG 汇合被误判为回环。本次 <span class="path">1-1-2-2</span> 成功后引擎再次自动标注 (cycle)，此轮标注正确（★D 汇合）。</li>
+    <li><b>重复子节点</b>：<span class="path">1-1-3-2</span> 派生时同一键生成多个 pending 节点（解析器未按父节点+键去重），深度上限使其自动收尾，未做物理删除。</li>
+    <li><b>夜间 w3/w4 键位矛盾存疑</b>：夜间 <span class="path">1-1-2-3</span> / <span class="path">1-1-2-4</span> 分别落到 ★A/★B 菜单，与白天 3 键菜单对不上；最可能是夜间强制同意层导致的整体腿偏移，因全树已完成不再补证，报告按"夜间失步疑似"保留。</li>
+    <li><b>深度上限截断新分支</b>：★D 产品菜单无输入延展层（个人/企业采购/返回）位于深度 5，其后续键位（企业采购路径）受 MAX_DEPTH=5 限制未能探索。</li>
+  </ul>
+
+  <h3>基础设施层</h3>
+  <ul>
+    <li><b>录音 5MB 上限</b>：8kHz 立体声约 156 秒超限。<b>已修复</b>：自动混缩单声道（容量约 312 秒），探针通话上限定为 310 秒。</li>
+    <li><b>预算闸门语义缺陷</b>：耗尽时未探节点被误标 failed 而非保持 pending（本次发生 3 次，均人工重置）。</li>
+    <li><b>局域网 IP 漂移</b>：Mac DHCP 换地址后网关与手机 SIP App 双失效，建议路由器 IP/MAC 绑定。</li>
+  </ul>
+</section>
+
+<section>
+  <div class="chapter"><span class="no">三</span><h2>优化 Backlog（按阻塞探索程度排序）</h2></div>
+  <div class="table-scroll">
+  <table>
+    <tr><th>级别</th><th>事项</th><th>阻塞面</th></tr>
+    <tr><td><span class="pill p0">P0</span></td>
+        <td>导航腿健壮性三件套：① 按键前菜单身份校验（与已存 prompt_text 模糊匹配，不匹配等重播重新同步）；② 容忍无按键长播报（英文 preamble、转接语）；③ 实时 ASR 静默会话自动重开重试一次。<b>探索已全部完成，降级为预防项</b>——本次最终重试的成功也证明失败是间歇性技术问题而非业务死路</td>
+        <td>无当前阻塞；预防夜间作业与未来重探</td></tr>
+    <tr><td><span class="pill p1">P1</span></td>
+        <td>预算闸门改为保持 pending：耗尽即暂停，下窗口零成本续跑</td>
+        <td>多窗口长跑的状态完整性</td></tr>
+    <tr><td><span class="pill p1">P1</span></td>
+        <td>DAG 建模：相同话术菜单跨路径合并为单节点多引用；解析器按（父节点+键）去重；(cycle) 与"汇合"区分</td>
+        <td>树可读性与报告准确性（已实证 4 处汇合 + 1 处误判）</td></tr>
+    <tr><td><span class="pill p1">P1</span></td>
+        <td>昼夜双形态建模：节点记录探索时段，同一菜单的"昼/夜终态"作为两种标注而非两个节点</td>
+        <td>报告可信度；避免昼夜数据互相污染</td></tr>
+    <tr><td><span class="pill p2">P2</span></td>
+        <td>超时探针豁免深度上限（<span class="path">wn</span> 是观测不是下钻）</td>
+        <td>深度 5 菜单的超时路径</td></tr>
+    <tr><td><span class="pill p2">P2</span></td>
+        <td>路由器 IP/MAC 绑定 + 手机 SIP App 配置热重载</td>
+        <td>运维效率</td></tr>
+  </table>
+  </div>
+</section>
+
+<section>
+  <div class="chapter"><span class="no">四</span><h2>本土化专题</h2></div>
+
+  <h3>1. 隐私同意是强制第一关，夜间必须按键</h3>
+  <p>来电首先听到："按照 Apple 隐私政策的规定，与本次通话相关的部分有限个人信息<b>可能会在中国大陆境外存储和处理</b>。如果您同意，请按 1；如需结束本次通话，请按 2。"白天可自动放行，夜间必须按 1——跨境数据告知与《个人信息保护法》合规直接挂钩，任何话术改动需法务复核。</p>
+
+  <h3>2. 云上贵州告知：iCloud 合规链路</h3>
+  <p>账户类问题转人工前播报："如果您致电我们咨询关于 iCloud 的问题——<b>云上贵州已授权 Apple 支持为您提供帮助</b>。Apple 的保修范围是对消费者法律赋予您的权利的补充。"这是 iCloud 中国（云上贵州运营）数据主权安排在客服链路中的显式体现，紧随其后还有保修查询选项。</p>
+
+  <h3>3. 转人工前的"调查同意"仪式</h3>
+  <p>所有白天人工转接前必问："Apple 会在本次通话之后通过电子邮件发送一份调查，或者我是否能通过短信向您发送调查？可能收取标准短信费用。接受按 1，否则按 2。"——CSI 调查渠道偏好收集嵌在转接路径上。</p>
+
+  <h3>4. 夜间自助闭环三件套</h3>
+  <p>下班后所有人工终态替换为：① 各分支"已下班 + 短信发送自助链接（可能收取标准短信费用，按 1 发送）"；② 根层播报"登录 Apple 官网下载 <b>Apple 支持 App</b>，或关注 <b>Apple 微信公众号</b>获取帮助"；③ 英文 preamble 宣告工时（9:00–21:00，每周 7 天）。短信链接 + App + 微信公众号构成中国市场特有的离峰自助闭环。</p>
+
+  <h3>5. 语言选择的隐性语义</h3>
+  <p>"普通话按 1 / English press 2"不仅是语言切换：英文子树全部快速接通人工（实测坐席接听并询问姓氏），中文子树高度自助化。英文人工是溢价投入，中文来电者事实上被分层服务。</p>
+
+  <h3>6. 无输入超时完整周期（2026-10-03 1w1wn 探针最终实证）</h3>
+  <div class="timeline">昼 · 按键应答探针（1-1-超时，人工窗口 18:41）
+0:50 主菜单播完
+→ 1:20 重播①「我没有检测到按键输入」
+→ 1:51 最终提醒「很抱歉，如果您还在线上，我听不见您的声音。
+             若要继续，请按任意键。否则，我将需要结束这通话。」
+→ 探测系统按 9 应答
+→ 2:03 / 2:31 菜单继续重播两轮
+→ 3:02 「我们目前碰到一些技术上的问题。请稍后再来电。」
+→ 3:09 感谢致电 → 挂断</div>
+  <div class="callout">
+    <p><b>终态关键发现（v4 修正）</b>：在最终提醒处按键后，IVR 不挂断也不转人工，而是继续重播约 60 秒，最终以"技术问题"话术收尾。此前探针把更晚出现的"非常抱歉，仍然听不见任何声音"误当作应答点，按键只会开启新一轮重播，因此永远等不到这段收尾。</p>
+  </div>
+
+  <h3>7. 企业采购（B2B）入口藏在产品菜单超时后</h3>
+  <p>★D 产品选择菜单首次播报只列个人产品（iPhone/Vision Pro/Watch/iPad/Mac/其他）；保持沉默等到重播后，才追加"个人咨询或购买按 1，<b>企业采购按 6</b>，返回上一菜单按 9"。企业销售入口对主动沉默的来电者才可见——既是 B2B 线索分流，也可能是非工作时间的人力保护。该层位于深度 5，企业采购后续流程未及探索。</p>
+</section>
+
+<section>
+  <div class="chapter"><span class="no">五</span><h2>成本与预算</h2></div>
+  <div class="stats">
+    <div class="stat"><div class="v">93 / 220</div><div class="k">目标累计通话 / 上限</div></div>
+    <div class="stat"><div class="v">20 / 20</div><div class="k">10-02 白天窗口</div></div>
+    <div class="stat"><div class="v">11 / 24</div><div class="k">10-02 夜间窗口</div></div>
+    <div class="stat"><div class="v">9 / 9</div><div class="k">10-03 白天窗口</div></div>
+  </div>
+  <ul>
+    <li><b>通话通道成本 ≈ 0</b>：Android SIM 网关走手机套餐；单通成本主要是腾讯 ASR/TTS 与 DeepSeek 解析（每次 2–5 分钟双通道识别，分级人民币量级）。</li>
+    <li><b>失败损耗</b>：夜间约 36%（夜间特有 preamble + ASR 静默），白天两批次重试最终全部成功；最后一个节点第 4 次尝试通过，证明失败均为间歇性技术问题。P0 健壮性三件套落地后预期损耗降至个位数百分比。</li>
+    <li><b>预算追加记录</b>：10-02 夜间窗口 8→24（+16）、10-03 白天窗口 8→9（+1，含 1w1wn 超时终态探针），均经操作员明确数字确认；目标总上限 220 未变，累计使用 93，余 127。</li>
+    <li><b>录音留存分级</b>（ADR 0042）：菜单证据 30 天、超时探针证据 30 天、含人工坐席 24 小时、常规 7 天，从严归类；两次超时探针录音已归档证据级，新成功电话录音按菜单证据归档。</li>
+    <li><b>探索剩余工作：无</b>——60/60 节点全部完成。可选后续：P0 导航健壮性（预防项）、企业采购延展层在放宽深度后补探（约 1–2 通）。</li>
+  </ul>
+</section>
+
+<footer>
+  数据源自 IVR 树发现系统会话 8aef3700（SQLite + 录音归档），所有话术引用均来自腾讯 8k_zh ASR 转写原文并经全量复核；英文段转写质量受 8k 中文引擎限制，以录音为准。版本沿革：v1 初版 → v2（2026-10-03 全面重梳，修正昼夜混淆与菜单解析错误）→ v3（1-1-2-2 重探成功，全树 60/60 完成，新增 ★D 产品选择汇合菜单与企业采购分流发现，夜间 w3/w4 键位矛盾按失步疑似保留）→ <b>v4（2026-10-03 终版：1w1wn 探针实证超时真实终态——最终提醒处按键后再播两轮，以"我们目前碰到一些技术上的问题"收尾挂断；"仍然听不见"从终态判据中移除，ADR 0041 同步修正）</b>。
+</footer>
+</div>
+</body>
+</html>

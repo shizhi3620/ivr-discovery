@@ -114,9 +114,19 @@ class TestTencentAudioProvider:
             await provider._client.aclose()
 
     @pytest.mark.asyncio
-    async def test_rejects_local_audio_over_five_megabytes(self, tmp_path: Path):
+    async def test_rejects_local_audio_over_five_megabytes(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Oversize recordings get one 8 kHz resample attempt before rejection."""
+        import audio.tencent_provider as tp
+
         recording = tmp_path / "large.wav"
         recording.write_bytes(b"x" * (5 * 1024 * 1024 + 1))
+
+        async def fake_downmix(path: Path) -> Path:
+            return path  # pretend downmix did not shrink it
+
+        monkeypatch.setattr(tp, "_downmix_to_mono", fake_downmix)
         provider = TencentAudioProvider(secret_id="id", secret_key="key")
 
         with pytest.raises(AudioProviderError, match="5 MB"):
@@ -157,3 +167,118 @@ class TestTencentAudioProvider:
         assert captured[0]["SampleRate"] == 8000
         assert captured[0]["Codec"] == "wav"
         assert captured[0]["VoiceType"] == 101001
+
+
+class TestDownmixFallback:
+    @staticmethod
+    def _make_stereo_wav(path: Path, *, rate: int = 8000, seconds: float = 0.5) -> Path:
+        import math
+        import struct
+        import wave
+
+        frames = int(rate * seconds)
+        with wave.open(str(path), "wb") as wav:
+            wav.setnchannels(2)
+            wav.setsampwidth(2)
+            wav.setframerate(rate)
+            wav.writeframes(
+                b"".join(
+                    struct.pack(
+                        "<hh",
+                        int(8000 * math.sin(2 * math.pi * 440 * i / rate)),
+                        int(4000 * math.sin(2 * math.pi * 220 * i / rate)),
+                    )
+                    for i in range(frames)
+                )
+            )
+        return path
+
+    @pytest.mark.asyncio
+    async def test_downmix_to_mono_produces_mono_8khz_wav(self, tmp_path: Path):
+        import wave
+
+        from audio.tencent_provider import _downmix_to_mono
+
+        source = self._make_stereo_wav(tmp_path / "call.wav")
+        result = await _downmix_to_mono(source)
+
+        assert result == tmp_path / "call.mono.wav"
+        with wave.open(str(result), "rb") as wav:
+            assert wav.getframerate() == 8000
+            assert wav.getnchannels() == 1
+            assert wav.getsampwidth() == 2
+            assert 3500 < wav.getnframes() < 4500  # ~0.5 s at 8 kHz
+
+    @pytest.mark.asyncio
+    async def test_transcribe_falls_back_to_mono_downmix(
+        self, tmp_path: Path, monkeypatch
+    ):
+        import audio.tencent_provider as tp
+
+        big = tmp_path / "call.wav"
+        big.write_bytes(b"X" * 100)
+        small = tmp_path / "call.mono.wav"
+        small.write_bytes(b"RIFF-downmixed")
+
+        monkeypatch.setattr(tp, "MAX_LOCAL_AUDIO_BYTES", 50)
+
+        async def fake_downmix(path: Path) -> Path:
+            assert path == big
+            return small
+
+        monkeypatch.setattr(tp, "_downmix_to_mono", fake_downmix)
+
+        sent: list[dict] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            action = request.headers["X-TC-Action"]
+            payload = json.loads(request.content)
+            if action == "CreateRecTask":
+                sent.append(payload)
+                return httpx.Response(
+                    200, json={"Response": {"Data": {"TaskId": 7}, "RequestId": "r1"}}
+                )
+            if action == "DescribeTaskStatus":
+                return httpx.Response(
+                    200,
+                    json={
+                        "Response": {
+                            "Data": {"TaskId": 7, "Status": 2, "Result": " 转写结果 "},
+                            "RequestId": "r2",
+                        }
+                    },
+                )
+            raise AssertionError(f"Unexpected action: {action}")
+
+        provider = TencentAudioProvider(
+            secret_id="id", secret_key="key", poll_interval=0, client=_client(handler)
+        )
+        try:
+            transcript = await provider.transcribe(big)
+        finally:
+            await provider._client.aclose()
+
+        assert transcript == "转写结果"
+        assert base64.b64decode(sent[0]["Data"]) == b"RIFF-downmixed"
+        assert sent[0]["ChannelNum"] == 1  # downmixed audio must be declared mono
+
+    @pytest.mark.asyncio
+    async def test_transcribe_raises_when_still_too_big(
+        self, tmp_path: Path, monkeypatch
+    ):
+        import audio.tencent_provider as tp
+
+        big = tmp_path / "call.wav"
+        big.write_bytes(b"X" * 100)
+        monkeypatch.setattr(tp, "MAX_LOCAL_AUDIO_BYTES", 50)
+
+        async def fake_downmix(path: Path) -> Path:
+            still_big = tmp_path / "call.mono.wav"
+            still_big.write_bytes(b"Y" * 80)
+            return still_big
+
+        monkeypatch.setattr(tp, "_downmix_to_mono", fake_downmix)
+
+        provider = TencentAudioProvider(secret_id="id", secret_key="key")
+        with pytest.raises(AudioProviderError, match="5 MB"):
+            await provider.transcribe(big)

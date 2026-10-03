@@ -92,6 +92,33 @@ _DTMF_PATTERNS = (
     re.compile(r"key\s+([0-9*#])", re.IGNORECASE),
 )
 
+# No-input timeout reminders ("继续提醒", ADR 0041): the IVR offers to keep the
+# call alive if the caller presses any key. Detected only when the stream
+# segment opts in via ``detect_any_key_prompt``.
+_ANY_KEY_PROMPT_PATTERNS = (
+    re.compile(r"按任意键"),
+    re.compile(r"任意.{0,3}键.{0,4}继续"),
+    re.compile(r"press\s+any\s+key", re.IGNORECASE),
+)
+
+# Final no-input reminder (ADR 0041, operator-verified 2026-10-03): the real
+# terminal warning is the "若要继续，请按任意键。否则，我将需要结束这通话"
+# sentence. ASR splits it across three short segments, so the terminal pattern
+# matches the trailing "否则…结束…通话" fragment on its own. Dedicated probes
+# answer it with a keypress and then observe the tail ("我们遇到一些技术问题")
+# until the remote hangup.
+#
+# The later "非常抱歉，仍然听不见任何声音。" line is NOT terminal: answering
+# there just feeds another menu-replay cycle, which silently hid the true tail
+# from earlier probes.
+_FINAL_REMINDER_PATTERNS = (
+    re.compile(r"否则.{0,15}(?:结束|终止).{0,6}通话"),
+    re.compile(
+        r"otherwise.{0,20}(?:end|terminate|disconnect|have\s+to\s+end)",
+        re.IGNORECASE,
+    ),
+)
+
 # Realtime ASR may stream a long announcement as one cumulative sentence or as
 # several consecutive sentence fragments. Keep a bounded rolling window of the
 # most recent fragments so context-dependent rules still see their full
@@ -133,6 +160,16 @@ def has_human_boundary(text: str) -> bool:
     return bool(matched_human_keywords(text))
 
 
+def has_any_key_prompt(text: str) -> bool:
+    """Return True when the text contains a no-input "press any key" reminder."""
+    return any(pattern.search(text) for pattern in _ANY_KEY_PROMPT_PATTERNS)
+
+
+def is_final_no_input_reminder(text: str) -> bool:
+    """Return True for the last "press any key" reminder before hangup."""
+    return any(pattern.search(text) for pattern in _FINAL_REMINDER_PATTERNS)
+
+
 class RealtimeDecisionEngine:
     """Consume ASR text and emit deterministic control events."""
 
@@ -152,6 +189,8 @@ class RealtimeDecisionEngine:
         automated_notice_extension_ms: int = DEFAULT_AUTOMATED_NOTICE_EXTENSION_MS,
         hold_through_human_boundary: bool = False,
         human_boundary_menu_grace_ms: int = 0,
+        detect_any_key_prompt: bool = False,
+        detect_final_reminder: bool = False,
     ) -> None:
         self.channel_uuid = channel_uuid
         self.exploration_call_id = exploration_call_id
@@ -178,6 +217,11 @@ class RealtimeDecisionEngine:
         self.human_boundary_menu_grace_seconds = max(
             0.0, human_boundary_menu_grace_ms / 1000
         )
+        # Timeout-probe segments (ADR 0041): surface "press any key" reminders
+        # as a non-terminal event so the provider can answer the reminder and
+        # keep observing the no-input path.
+        self.detect_any_key_prompt = detect_any_key_prompt
+        self.detect_final_reminder = detect_final_reminder
         self._revision = 0
         self._final_text = ""
         self._context_segments: list[tuple[str, float]] = []
@@ -193,6 +237,8 @@ class RealtimeDecisionEngine:
         self._pending_boundary = False
         self._cancelled_keywords: set[str] = set()
         self._extension_used = False
+        self._any_key_prompt_emitted = False
+        self._final_reminder_emitted = False
 
     @property
     def shadow_enabled(self) -> bool:
@@ -226,6 +272,24 @@ class RealtimeDecisionEngine:
             await self._handle_human_boundary(text=text, context=context)
             if self._stopped:
                 return
+
+        if (
+            self.detect_any_key_prompt
+            and not self._any_key_prompt_emitted
+            and has_any_key_prompt(text)
+        ):
+            self._any_key_prompt_emitted = True
+            logger.info("Any-key reminder detected: %r", text)
+            await self._emit("any_key_prompt", text=text)
+
+        if (
+            self.detect_final_reminder
+            and not self._final_reminder_emitted
+            and is_final_no_input_reminder(text)
+        ):
+            self._final_reminder_emitted = True
+            logger.info("Final no-input reminder detected: %r", text)
+            await self._emit("final_any_key_prompt", text=text)
 
         if is_final:
             self._final_text = f"{self._final_text} {text}".strip()
