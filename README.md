@@ -128,3 +128,31 @@ frontend/
 │       └── NodeDetail.tsx # Side panel with transcript + options
 └── vite.config.ts
 ```
+
+## Acknowledgments
+
+This project originally derives from [**arnyboy101/ivr-tree-discovery**](https://github.com/arnyboy101/ivr-tree-discovery), an automated IVR phone tree explorer built around Bland AI calls and Claude transcript parsing.
+
+Retained from the original design:
+
+- BFS exploration of the IVR tree with depth-prioritized queuing
+- Cycle detection via option-label similarity (Jaccard fingerprinting)
+- SQLite-backed session/node/edge persistence
+- Live tree updates to the browser over WebSocket
+- The React Flow tree UI (dagre auto-layout, node detail panel)
+
+Significant changes made in this repository:
+
+- **Pluggable telephony Provider seam** (`backend/providers/`, selected by
+  `TELEPHONY_PROVIDER`); Bland AI is now an optional non-default provider
+- **Android SIM gateway path** (default): rooted Android phone driven through
+  FreeSWITCH ESL, with local WAV recording (see `gateway/`)
+- **Audio Provider boundary** using Tencent Cloud 8 kHz ASR/TTS, replacing
+  provider-returned transcripts and adding DTMF voice-prompt synthesis
+- DeepSeek as the default transcript parser (Anthropic remains optional)
+- Session bundle export/import, bilingual optimization reports, recording
+  retention, and additional discovery/route-rebuild tooling
+
+The upstream repository does not declare an open-source license. This notice
+attributes the original work to its author; please consult the upstream author
+before redistribution or commercial use.
