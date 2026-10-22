@@ -395,7 +395,7 @@ function App() {
               >
                 Tree
               </button>
-              {session.phone_number === '4006668800' && (
+              {session?.phone_number === '4006668800' && (
                 <button
                   onClick={() => setView('final-report')}
                   className={`px-3 py-1 text-xs rounded-md transition-colors ${
@@ -474,6 +474,8 @@ function App() {
             <TreeView
               nodes={nodes}
               edges={edges}
+              sessionId={session?.id}
+              phoneNumber={session?.phone_number}
               onNodeClick={(id) => setSelectedNodeId(id === selectedNodeId ? null : id)}
             />
           ) : (

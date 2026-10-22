@@ -51,7 +51,7 @@ function reportToMarkdown(report: OptimizationReport): string {
     );
   }
 
-  for (const language of ['zh', 'en'] as const) {
+  for (const language of ['en', 'zh'] as const) {
     const section = report[language];
     lines.push(`# ${language === 'zh' ? '中文版' : 'English version'}`, '');
     lines.push(`## ${section.title}`, '', section.executive_summary, '');
@@ -112,7 +112,7 @@ export function ReportView({
   onBusinessContextChange,
   onGenerate,
 }: ReportViewProps) {
-  const [language, setLanguage] = useState<'zh' | 'en'>('zh');
+  const [language, setLanguage] = useState<'zh' | 'en'>('en');
   const section: LocalizedOptimizationReport | null = useMemo(
     () => (report ? report[language] : null),
     [report, language]
@@ -156,7 +156,7 @@ export function ReportView({
               {report && (
                 <>
                   <div className="flex rounded-lg border border-gray-800 p-0.5">
-                    {(['zh', 'en'] as const).map((code) => (
+                    {(['en', 'zh'] as const).map((code) => (
                       <button
                         key={code}
                         onClick={() => setLanguage(code)}

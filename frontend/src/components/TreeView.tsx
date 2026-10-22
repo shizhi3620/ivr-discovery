@@ -1,4 +1,4 @@
-import { useMemo, useEffect, useRef } from 'react';
+import { useMemo, useEffect, useRef, useState, useCallback } from 'react';
 import {
   ReactFlow,
   Background,
@@ -6,9 +6,12 @@ import {
   Position,
   useReactFlow,
   ReactFlowProvider,
+  getNodesBounds,
+  getViewportForBounds,
   type Node as RFNode,
   type Edge as RFEdge,
 } from '@xyflow/react';
+import { toPng, toSvg } from 'html-to-image';
 import Dagre from '@dagrejs/dagre';
 import '@xyflow/react/dist/style.css';
 import type { IVRNode, IVREdge } from '../types';
@@ -17,6 +20,8 @@ import { IVRNodeComponent, type IVRNodeData } from './IVRNode';
 interface TreeViewProps {
   nodes: IVRNode[];
   edges: IVREdge[];
+  sessionId?: string | null;
+  phoneNumber?: string | null;
   onNodeClick?: (nodeId: string) => void;
 }
 
@@ -56,9 +61,27 @@ function nodeLabel(node: IVRNode): string {
   return node.dtmf_path || 'Pending';
 }
 
-function TreeViewInner({ nodes, edges, onNodeClick }: TreeViewProps) {
-  const { fitView } = useReactFlow();
+// Filename-safe timestamp, e.g. 20261021-1530
+function fileTimestamp(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(
+    d.getMinutes()
+  )}`;
+}
+
+function triggerDownload(href: string, filename: string) {
+  const link = document.createElement('a');
+  link.href = href;
+  link.download = filename;
+  link.click();
+}
+
+function TreeViewInner({ nodes, edges, sessionId, phoneNumber, onNodeClick }: TreeViewProps) {
+  const { fitView, getNodes } = useReactFlow();
+  const wrapperRef = useRef<HTMLDivElement>(null);
   const fitViewTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const [exporting, setExporting] = useState<'png' | 'svg' | 'session' | null>(null);
 
   // Build a map of node_id -> edge label for display on child nodes
   const edgeLabelMap = useMemo(() => {
@@ -145,7 +168,118 @@ function TreeViewInner({ nodes, edges, onNodeClick }: TreeViewProps) {
     return () => clearTimeout(fitViewTimer.current);
   }, [structureKey, fitView]);
 
+  const exportImage = useCallback(
+    async (format: 'png' | 'svg') => {
+      const flowEl = wrapperRef.current?.querySelector('.react-flow') as
+        | HTMLElement
+        | null;
+      if (!flowEl || getNodes().length === 0) return;
+      setExporting(format);
+      try {
+        // Fit every node (plus margin) into the export regardless of current zoom/pan.
+        const nodesBounds = getNodesBounds(getNodes());
+        const width = Math.max(1, Math.ceil(nodesBounds.width) + 160);
+        const height = Math.max(1, Math.ceil(nodesBounds.height) + 200);
+        const viewport = getViewportForBounds(
+          nodesBounds,
+          width,
+          height,
+          0.1,
+          2.5,
+          0.08
+        );
+        const captureOptions: NonNullable<Parameters<typeof toSvg>[1]> = {
+          backgroundColor: '#030712',
+          width,
+          height,
+          style: {
+            width: `${width}px`,
+            height: `${height}px`,
+            transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
+          },
+          // Keep React Flow's zoom controls out of the exported image.
+          filter: (node) =>
+            !(
+              node instanceof HTMLElement && node.matches('.react-flow__controls')
+            ),
+        };
+
+        const base = phoneNumber ? `${phoneNumber}-` : '';
+        if (format === 'svg') {
+          // Vector output: stays crisp at any zoom, good for PDF/slides embeds.
+          const dataUrl = await toSvg(flowEl, captureOptions);
+          triggerDownload(dataUrl, `ivr-tree-${base}${fileTimestamp()}.svg`);
+        } else {
+          // 3x raster keeps text sharp on high-DPI screens and in print.
+          const dataUrl = await toPng(flowEl, {
+            ...captureOptions,
+            type: 'image/png' as const,
+            pixelRatio: 3,
+          });
+          triggerDownload(dataUrl, `ivr-tree-${base}${fileTimestamp()}.png`);
+        }
+      } catch (err) {
+        console.error(`${format.toUpperCase()} export failed:`, err);
+      } finally {
+        setExporting(null);
+      }
+    },
+    [getNodes, phoneNumber]
+  );
+
+  // Download the full shareable session bundle (tree + cached report) from the
+  // backend; recipients import it with backend/scripts/import_session.py.
+  const exportSession = useCallback(async () => {
+    if (!sessionId) return;
+    setExporting('session');
+    try {
+      const response = await fetch(`/api/sessions/${sessionId}/export`);
+      if (!response.ok) throw new Error(`export failed: HTTP ${response.status}`);
+      const blob = await response.blob();
+      const disposition = response.headers.get('Content-Disposition') ?? '';
+      const match = disposition.match(/filename="(.+?)"/);
+      const filename = match?.[1] ?? `ivr-session-${sessionId.slice(0, 8)}.json`;
+      const url = URL.createObjectURL(blob);
+      triggerDownload(url, filename);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Session export failed:', err);
+    } finally {
+      setExporting(null);
+    }
+  }, [sessionId]);
+
+  const exportDisabled = exporting !== null || nodes.length === 0;
+
   return (
+    <div ref={wrapperRef} className="relative w-full h-full">
+      {/* Export toolbar */}
+      <div className="absolute top-3 right-3 z-50 flex gap-1.5">
+        <button
+          onClick={() => void exportImage('png')}
+          disabled={exportDisabled}
+          title="Export the full IVR tree as a high-resolution PNG (3x)"
+          className="px-2.5 py-1.5 text-xs font-medium rounded-lg border border-gray-700 bg-[#111827]/90 text-gray-300 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {exporting === 'png' ? 'Exporting…' : 'Export PNG'}
+        </button>
+        <button
+          onClick={() => void exportImage('svg')}
+          disabled={exportDisabled}
+          title="Export the full IVR tree as a vector SVG — crisp at any zoom"
+          className="px-2.5 py-1.5 text-xs font-medium rounded-lg border border-gray-700 bg-[#111827]/90 text-gray-300 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {exporting === 'svg' ? 'Exporting…' : 'Export SVG'}
+        </button>
+        <button
+          onClick={() => void exportSession()}
+          disabled={exportDisabled || !sessionId}
+          title="Download a session bundle (tree + report) to share with another local instance"
+          className="px-2.5 py-1.5 text-xs font-medium rounded-lg border border-gray-700 bg-[#111827]/90 text-gray-300 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {exporting === 'session' ? 'Exporting…' : 'Share Session'}
+        </button>
+      </div>
     <ReactFlow
       nodes={layouted.nodes}
       edges={layouted.edges}
@@ -168,6 +302,7 @@ function TreeViewInner({ nodes, edges, onNodeClick }: TreeViewProps) {
         }}
       />
     </ReactFlow>
+    </div>
   );
 }
 

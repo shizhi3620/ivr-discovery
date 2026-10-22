@@ -7,9 +7,10 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 import database as db
+import session_bundle
 from discovery import run_discovery, rediscover_subtree, session_status_payload
 from discovery_windows import APP_TIMEZONE, authorize_run, get_current_window
 from models import Session, SessionStatus, WindowStatus
@@ -318,6 +319,25 @@ async def get_session_by_id(session_id: str):
         "nodes": [n.model_dump() for n in nodes],
         "edges": [e.model_dump() for e in edges],
     }
+
+
+@app.get("/api/sessions/{session_id}/export")
+def export_session(session_id: str):
+    """Download a portable JSON bundle of one session for sharing.
+
+    Import on another machine with backend/scripts/import_session.py.
+    """
+    try:
+        bundle = session_bundle.export_bundle(db.DB_PATH, session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    phone = bundle["session"].get("phone_number") or "ivr"
+    filename = f"ivr-session-{phone}-{session_id[:8]}.json"
+    return JSONResponse(
+        bundle,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/api/nodes/{node_id}")

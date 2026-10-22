@@ -2,8 +2,6 @@
 
 Automated IVR phone tree explorer. Enter an authorized phone number and the system places real calls to discover and map out the menu structure as an interactive tree.
 
-**Live demo: https://ivr-tree-discovery-production.up.railway.app/**
-
 ## How It Works
 
 1. **Root call**: The default Android SIM gateway places a real cellular call and records the IVR audio
@@ -79,6 +77,30 @@ Open http://localhost:5173
 For the China mainland path, configure FreeSWITCH, register the Android gateway,
 and start FreeSWITCH before the backend. See
 [gateway/freeswitch/README.md](gateway/freeswitch/README.md).
+
+## Sharing a session
+
+A discovery session (tree + cached bilingual report, no recordings or
+credentials) can be exported as a single JSON bundle and imported by another
+local instance.
+
+**Sender** — Tree view toolbar: **Share Session** (or the CLI):
+
+```bash
+python backend/scripts/export_session.py <session_id>
+# → ivr-session-<phone>-<id8>.json
+```
+
+**Recipient** — make sure the backend has started at least once (so the database
+schema exists), then:
+
+```bash
+python backend/scripts/import_session.py ivr-session-<phone>-<id8>.json
+```
+
+Import is idempotent and never overwrites local data. Start both dev servers and
+open `http://localhost:5173/<session-id>` directly (or load `/` for the latest
+session). The scripts are stdlib-only and do not need the venv.
 
 ## Project Structure
 
